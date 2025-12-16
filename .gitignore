@@ -1,0 +1,48 @@
+# --- Python -------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node / build output ------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+*.tsbuildinfo
+*.local
+
+# --- Local runtime data -------------------------------------------------
+backend/yar.db
+backend/yar.db-journal
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# --- Repository tooling, agent context and docs (kept local) ------------
+/.ai/
+/.context/
+/docs/
+/_docs/
+/agent-os.sh
+/AGENTS.md
+/PROMPT-INDEX.md
+/sessions.mtxt
+
+# --- Secrets ------------------------------------------------------------
+.env
+.env.*
+*.pem
+*.key
+*.p12
+credentials*.json
+
+# --- OS / editor --------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+
+# --- Logs ---------------------------------------------------------------
+*.log
