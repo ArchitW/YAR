@@ -26,3 +26,23 @@ def get_workspace(ws_id: int, db: Session = Depends(get_db)):
     return ws
 
 @router.patch("/{ws_id}")
+def update_workspace(ws_id: int, name: Optional[str] = None, description: Optional[str] = None, db: Session = Depends(get_db)):
+    ws = db.query(Workspace).filter(Workspace.id == ws_id).first()
+    if not ws:
+        raise HTTPException(status_code=404, detail="not found")
+    if name is not None:
+        ws.name = name
+    if description is not None:
+        ws.description = description
+    db.commit()
+    db.refresh(ws)
+    return ws
+
+@router.delete("/{ws_id}")
+def delete_workspace(ws_id: int, db: Session = Depends(get_db)):
+    ws = db.query(Workspace).filter(Workspace.id == ws_id).first()
+    if not ws:
+        raise HTTPException(status_code=404, detail="not found")
+    db.delete(ws)
+    db.commit()
+    return {"deleted": ws_id}
