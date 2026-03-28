@@ -38,3 +38,17 @@ def split_text(text: str, target: int = 400, overlap: int = 50) -> list[str]:
         chunks = overlapped
     return chunks
 
+def adaptive_chunk(text: str) -> list[str]:
+    if re.search(r"^#{1,6}\s", text, re.M):
+        sections = re.split(r"(?=^#{1,6}\s)", text, flags=re.M)
+        out = []
+        for s in sections:
+            s = s.strip()
+            if s:
+                out.extend(split_text(s, target=400, overlap=50))
+        return out if out else split_text(text)
+    return split_text(text)
+
+def late_chunk(text: str) -> list[str]:
+    # Late chunking needs token-level embeddings; fall back to adaptive chunking.
+    return adaptive_chunk(text)
