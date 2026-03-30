@@ -17,3 +17,21 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
 COLLECTION = "yar_chunks"
 
+def ensure_collection():
+    if not qdrant.collection_exists(COLLECTION):
+        qdrant.create_collection(
+            COLLECTION,
+            vectors_config={"dense": VectorParams(size=1024, distance=Distance.COSINE)},
+            sparse_vectors_config={"sparse": SparseVectorParams()},
+        )
+
+def extract_text(path: str, content_type: str) -> str:
+    try:
+        if "text" in (content_type or "") or path.endswith(".txt"):
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+    except Exception:
+        return ""
+    return ""
+
+@router.post("/upload")
