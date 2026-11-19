@@ -67,3 +67,79 @@ def embed_sparse(text: str) -> Dict[str, List[Any]]:
         "indices": [k for k, _ in sorted_items],
         "values": [round(v, 4) for _, v in sorted_items],
     }
+
+
+def embed_late_chunks(
+    full_text: str,
+    chunks: List[str],
+    original_chunks: List[str] | None = None,
+) -> List[List[float]]:
+    """Late Chunking (Jina AI / BGE-M3 attention-span pooling architecture).
+
+    Encodes the full document in a single forward pass through the transformer
+    so every token attends across the entire document context window (up to 8,192 tokens).
+    Then pools the token embeddings within each chunk's span into a normalized dense vector.
+
+    Falls back cleanly to standard batched embed(chunks) if token slicing is unavailable.
+    """
+    if not chunks:
+        return []
+    if not full_text.strip():
+        return embed(chunks)
+
+    search_chunks = original_chunks if original_chunks is not None else chunks
+
+    try:
+        import torch
+
+        m = get_model()
+        device = getattr(m, "device", torch.device("cpu"))
+        tokenizer = getattr(m, "tokenizer", None)
+        transformer_module = m[0] if len(m) > 0 and hasattr(m[0], "auto_model") else None
+
+        if tokenizer is None or transformer_module is None:
+            return embed(chunks)
+
+        # Tokenize entire document with offset mapping
+        inputs = tokenizer(
+            full_text,
+            return_tensors="pt",
+            return_offsets_mapping=True,
+            truncation=True,
+            max_length=8192,
+        )
+        offsets = inputs["offset_mapping"][0].tolist()
+        model_inputs = {k: v.to(device) for k, v in inputs.items() if k != "offset_mapping"}
+
+        with torch.no_grad():
+            out = transformer_module.auto_model(**model_inputs)
+            token_embeds = out.last_hidden_state[0]  # shape: (seq_len, hidden_dim)
+
+        chunk_embeddings: list[list[float]] = []
+        for i, chunk in enumerate(chunks):
+            ref_chunk = search_chunks[i] if i < len(search_chunks) else chunk
+            c_start = full_text.find(ref_chunk)
+            if c_start == -1:
+                c_start = 0
+            c_end = c_start + len(ref_chunk)
+
+            # Locate token indices that overlap the chunk character span
+            tok_indices = [
+                idx for idx, (s, e) in enumerate(offsets) if e > c_start and s < c_end
+            ]
+            if tok_indices:
+                span_embeds = token_embeds[tok_indices[0] : tok_indices[-1] + 1]
+                pooled = span_embeds.mean(dim=0)
+                norm = torch.nn.functional.normalize(pooled, p=2, dim=0)
+                chunk_embeddings.append(norm.cpu().tolist())
+            else:
+                chunk_embeddings.append(embed([chunk])[0])
+
+        return chunk_embeddings
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Late chunking forward pass failed (%s); using standard embed()", exc
+        )
+        return embed(chunks)

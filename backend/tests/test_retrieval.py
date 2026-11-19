@@ -212,3 +212,35 @@ class TestRerankerResilience:
         assert result[0]["id"] == "a"
         assert result[0]["rerank_score"] == 0.8
 
+
+class TestLateChunking:
+    def test_late_chunking_empty(self):
+        from app.services.embeddings import embed_late_chunks
+
+        assert embed_late_chunks("full text", []) == []
+
+    def test_late_chunking_fallback_when_empty_text(self, monkeypatch):
+        from app.services.embeddings import embed_late_chunks
+
+        monkeypatch.setattr(
+            "app.services.embeddings.embed",
+            lambda chunks: [[0.5] * 1024 for _ in chunks],
+        )
+        res = embed_late_chunks("", ["chunk 1", "chunk 2"])
+        assert len(res) == 2
+        assert len(res[0]) == 1024
+
+    def test_late_chunking_forward_pass_or_fallback(self):
+        from app.services.embeddings import embed_late_chunks
+
+        doc = "Quarterly financial summary. Revenue rose 12% in EMEA. Costs reduced by 4% in Americas."
+        chunks = [
+            "Quarterly financial summary.",
+            "Revenue rose 12% in EMEA.",
+            "Costs reduced by 4% in Americas.",
+        ]
+        res = embed_late_chunks(doc, chunks)
+        assert len(res) == 3
+        assert len(res[0]) == 1024
+
+

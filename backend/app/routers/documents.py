@@ -11,7 +11,7 @@ from qdrant_client.models import VectorParams, Distance, PointStruct, SparseVect
 from ..core.database import get_db
 from ..core.config import UPLOAD_DIR
 from ..models.document import Document
-from ..services.embeddings import embed, embed_sparse
+from ..services.embeddings import embed, embed_late_chunks, embed_sparse
 from ..services.chunking import adaptive_chunk
 from ..services.extraction import extract_text, is_supported
 
@@ -67,7 +67,7 @@ def upload_document(workspace_id: int, file: UploadFile = File(...), db: Session
         ensure_collection()
         chunks = adaptive_chunk(text)
         ctx_chunks = [f"Document: {file.filename}\n\n{chunk}" for chunk in chunks]
-        dense_vecs = embed(ctx_chunks)
+        dense_vecs = embed_late_chunks(text, ctx_chunks, original_chunks=chunks)
         points = []
         for i, (chunk, ctx_chunk, dvec) in enumerate(zip(chunks, ctx_chunks, dense_vecs)):
             meta = parse_chunk_metadata(chunk)
