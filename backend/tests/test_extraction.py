@@ -96,6 +96,56 @@ class TestUnsupported:
         path = tmp("file.xyz", "nope")
         assert is_supported(path, "text/plain") is True
 
+    def test_is_supported_image(self, tmp):
+        path = tmp("receipt.png", b"fake-png-bytes")
+        assert is_supported(path) is True
+        assert is_supported("random.bin", "image/png") is True
+
+
+class TestCleaning:
+    def test_clean_text_normalizes_unicode_and_hyphenation(self):
+        from app.services.cleaning import clean_text
+
+        raw = "This is a demon-\nstration of the clean-\ning pipeline.\x00\r\n\n\nNew paragraph."
+        cleaned = clean_text(raw)
+        assert "demonstration" in cleaned
+        assert "cleaning" in cleaned
+        assert "\x00" not in cleaned
+        assert "\r" not in cleaned
+        assert "\n\n\n" not in cleaned
+
+    def test_clean_text_empty(self):
+        from app.services.cleaning import clean_text
+
+        assert clean_text("") == ""
+
+
+class TestOcr:
+    def test_ocr_extracts_text_from_image(self, tmp_path):
+        from PIL import Image, ImageDraw
+        from app.services.ocr import ocr_image
+
+        img_path = str(tmp_path / "test_ocr.png")
+        img = Image.new("RGB", (250, 80), color=(255, 255, 255))
+        d = ImageDraw.Draw(img)
+        d.text((10, 30), "ORDER 12345", fill=(0, 0, 0))
+        img.save(img_path)
+
+        extracted = ocr_image(img_path)
+        assert "ORDER" in extracted or "12345" in extracted
+
+    def test_extract_text_supports_png(self, tmp_path):
+        from PIL import Image, ImageDraw
+
+        img_path = str(tmp_path / "invoice.png")
+        img = Image.new("RGB", (250, 80), color=(255, 255, 255))
+        d = ImageDraw.Draw(img)
+        d.text((10, 30), "PAID IN FULL", fill=(0, 0, 0))
+        img.save(img_path)
+
+        text = extract_text(img_path)
+        assert "PAID" in text or "FULL" in text
+
 
 # ---------------------------------------------------------------------------
 # PDF (requires pypdf — test only if available)
