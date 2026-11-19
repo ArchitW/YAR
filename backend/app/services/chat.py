@@ -39,9 +39,16 @@ def build_context(hits: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]
         citation = {**hit, "index": len(citations) + 1}
         file_name = hit.get("file_name") or "unknown file"
         chunk_index = hit.get("chunk_index")
-        location = file_name
+        loc_details = []
+        if hit.get("page_number") is not None:
+            loc_details.append(f"page {hit['page_number']}")
+        if hit.get("section"):
+            loc_details.append(f"section {hit['section']}")
         if chunk_index is not None:
-            location = f"{file_name} (chunk {chunk_index})"
+            loc_details.append(f"chunk {chunk_index}")
+        if hit.get("timestamp"):
+            loc_details.append(f"time {hit['timestamp']}")
+        location = f"{file_name} ({', '.join(loc_details)})" if loc_details else file_name
         blocks.append(f"[{citation['index']}] {location}\n{text}")
         citations.append(citation)
     return "\n\n".join(blocks), citations

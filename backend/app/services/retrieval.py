@@ -1,43 +1,116 @@
-from typing import List, Dict
 import os
+from typing import Any, Dict, List
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import SparseVector
+
 from ..services.embeddings import embed, embed_sparse
 from ..services.reranker import rerank
 
 qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
 COLLECTION = "yar_chunks"
 
+
 def rewrite_query(query: str) -> list[str]:
-    # Simple query rewriting: original + keyword-focused variant
+    """Query expansion: original query + keyword-filtered variant."""
     variants = [query]
     words = [w for w in query.split() if len(w) > 3]
     if words:
         variants.append(" ".join(words))
     return variants
 
-def retrieve(workspace_id: int, query: str, mode: str = "auto", top_k: int = 5) -> List[Dict]:
+
+def _query_qdrant(client: QdrantClient, query_vec: Any, using: str, limit: int = 20) -> list[Any]:
+    """Execute search against Qdrant supporting both query_points and legacy search."""
+    try:
+        if hasattr(client, "query_points"):
+            res = client.query_points(
+                COLLECTION,
+                query=query_vec,
+                using=using,
+                limit=limit,
+                with_payload=True,
+            )
+            return res.points
+        elif hasattr(client, "search"):
+            return client.search(
+                COLLECTION,
+                query_vector=(using, query_vec),
+                limit=limit,
+                with_payload=True,
+            )
+    except Exception:
+        return []
+    return []
+
+
+def retrieve(
+    workspace_id: int,
+    query: str,
+    mode: str = "auto",
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """Retrieve relevant chunks from Qdrant using the requested retrieval strategy.
+
+    Supported modes:
+    - 'semantic': Dense vector similarity only.
+    - 'keyword': Sparse lexical vector similarity only.
+    - 'hybrid': Fuses dense and sparse results with Reciprocal Rank Fusion (RRF).
+    - 'auto': Defaults to hybrid strategy.
+    """
+    mode = mode.lower().strip()
+    if mode not in ("semantic", "keyword", "hybrid", "auto"):
+        mode = "auto"
+    if mode == "auto":
+        mode = "hybrid"
+
+    run_dense = mode in ("semantic", "hybrid")
+    run_sparse = mode in ("keyword", "hybrid")
+
     variants = rewrite_query(query)
-    all_scores = {}
-    payload_map = {}
+    all_scores: dict[Any, float] = {}
+    payload_map: dict[Any, dict[str, Any]] = {}
+
     for v in variants:
-        dvec = embed([v])[0]
-        dense_res = qdrant.search(COLLECTION, query_vector=("dense", dvec), limit=20, with_payload=True)
-        sp = embed_sparse(v)
-        sparse_res = qdrant.search(COLLECTION, query_vector=("sparse", SparseVector(indices=sp["indices"], values=sp["values"])), limit=20, with_payload=True)
-        for rank, r in enumerate(dense_res):
-            pid = r.id
-            all_scores[pid] = all_scores.get(pid, 0) + 1.0 / (60 + rank)
-            payload_map[pid] = r.payload
-        for rank, r in enumerate(sparse_res):
-            pid = r.id
-            all_scores[pid] = all_scores.get(pid, 0) + 1.0 / (60 + rank)
-            payload_map[pid] = r.payload
-    cands = []
+        if run_dense:
+            dvec = embed([v])[0]
+            dense_res = _query_qdrant(qdrant, dvec, using="dense", limit=20)
+            for rank, r in enumerate(dense_res):
+                pid = r.id
+                all_scores[pid] = all_scores.get(pid, 0.0) + 1.0 / (60 + rank)
+                payload_map[pid] = r.payload or {}
+
+        if run_sparse:
+            sp = embed_sparse(v)
+            sparse_res = _query_qdrant(
+                qdrant,
+                SparseVector(indices=sp["indices"], values=sp["values"]),
+                using="sparse",
+                limit=20,
+            )
+            for rank, r in enumerate(sparse_res):
+                pid = r.id
+                all_scores[pid] = all_scores.get(pid, 0.0) + 1.0 / (60 + rank)
+                payload_map[pid] = r.payload or {}
+
+    cands: list[dict[str, Any]] = []
     for pid, sc in all_scores.items():
         pl = payload_map.get(pid) or {}
         if pl.get("workspace_id") != workspace_id:
             continue
-        cands.append({"id": pid, "score": sc, "document_id": pl.get("document_id"), "file_name": pl.get("file_name"), "chunk_text": pl.get("text", ""), "text": pl.get("text", ""), "chunk_index": pl.get("chunk_index"), "total_chunks": pl.get("total_chunks")})
+        cands.append({
+            "id": pid,
+            "score": sc,
+            "document_id": pl.get("document_id"),
+            "file_name": pl.get("file_name"),
+            "chunk_text": pl.get("text", ""),
+            "text": pl.get("text", ""),
+            "chunk_index": pl.get("chunk_index"),
+            "total_chunks": pl.get("total_chunks"),
+            "page_number": pl.get("page_number"),
+            "section": pl.get("section"),
+            "timestamp": pl.get("timestamp"),
+        })
+
     cands = rerank(query, cands)
     return cands[:top_k]

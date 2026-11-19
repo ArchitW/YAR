@@ -1,7 +1,9 @@
 import logging
 import os
+import re
 import shutil
 import uuid
+from typing import Any
 from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
@@ -27,6 +29,17 @@ def ensure_collection():
             vectors_config={"dense": VectorParams(size=1024, distance=Distance.COSINE)},
             sparse_vectors_config={"sparse": SparseVectorParams()},
         )
+
+
+def parse_chunk_metadata(chunk: str) -> dict[str, Any]:
+    meta: dict[str, Any] = {"page_number": None, "section": None}
+    page_match = re.search(r"\[Page\s+(\d+)\]", chunk, re.IGNORECASE)
+    if page_match:
+        meta["page_number"] = int(page_match.group(1))
+    sheet_match = re.search(r"\[Sheet:\s*([^\]]+)\]", chunk, re.IGNORECASE)
+    if sheet_match:
+        meta["section"] = sheet_match.group(1).strip()
+    return meta
 
 
 @router.post("/upload")
@@ -56,13 +69,25 @@ def upload_document(workspace_id: int, file: UploadFile = File(...), db: Session
         dense_vecs = embed(chunks)
         points = []
         for i, (chunk, dvec) in enumerate(zip(chunks, dense_vecs)):
+            meta = parse_chunk_metadata(chunk)
             # contextual prefix
             ctx_chunk = f"Document: {file.filename}\n\n{chunk}"
             sp = embed_sparse(ctx_chunk)
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
                 vector={"dense": embed([ctx_chunk])[0], "sparse": SparseVector(indices=sp["indices"], values=sp["values"])},
-                payload={"workspace_id": workspace_id, "document_id": doc.id, "file_name": doc.name, "chunk_index": i, "total_chunks": len(chunks), "text": chunk, "context": ctx_chunk},
+                payload={
+                    "workspace_id": workspace_id,
+                    "document_id": doc.id,
+                    "file_name": doc.name,
+                    "chunk_index": i,
+                    "total_chunks": len(chunks),
+                    "text": chunk,
+                    "context": ctx_chunk,
+                    "page_number": meta.get("page_number"),
+                    "section": meta.get("section"),
+                    "timestamp": None,
+                },
             ))
         qdrant.upsert(COLLECTION, points=points)
     return doc
