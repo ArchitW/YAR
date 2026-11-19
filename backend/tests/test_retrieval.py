@@ -44,7 +44,9 @@ class TestRetrievalModes:
             "text": "Dense hit",
         }
 
-        mock_query_qdrant = MagicMock(side_effect=lambda client, vec, using, limit: [dense_point] if using == "dense" else [])
+        mock_query_qdrant = MagicMock(
+            side_effect=lambda client, vec, using, *args, **kwargs: [dense_point] if using == "dense" else []
+        )
         monkeypatch.setattr("app.services.retrieval._query_qdrant", mock_query_qdrant)
 
         results = retrieve(workspace_id=1, query="revenue", mode="semantic")
@@ -57,6 +59,9 @@ class TestRetrievalModes:
         assert "dense" in usings_called
         assert "sparse" not in usings_called
 
+        # Verify query_filter was passed
+        assert mock_query_qdrant.call_args.kwargs.get("query_filter") is not None
+
     def test_keyword_mode_only_runs_sparse(self, mock_embeddings, monkeypatch):
         sparse_point = MagicMock()
         sparse_point.id = "p-sparse"
@@ -68,7 +73,9 @@ class TestRetrievalModes:
             "text": "Keyword hit",
         }
 
-        mock_query_qdrant = MagicMock(side_effect=lambda client, vec, using, limit: [sparse_point] if using == "sparse" else [])
+        mock_query_qdrant = MagicMock(
+            side_effect=lambda client, vec, using, *args, **kwargs: [sparse_point] if using == "sparse" else []
+        )
         monkeypatch.setattr("app.services.retrieval._query_qdrant", mock_query_qdrant)
 
         results = retrieve(workspace_id=1, query="revenue", mode="keyword")
@@ -91,7 +98,7 @@ class TestRetrievalModes:
         sparse_point.payload = {"workspace_id": 1, "text": "Hit 2"}
 
         mock_query_qdrant = MagicMock(
-            side_effect=lambda client, vec, using, limit: [dense_point] if using == "dense" else [sparse_point]
+            side_effect=lambda client, vec, using, *args, **kwargs: [dense_point] if using == "dense" else [sparse_point]
         )
         monkeypatch.setattr("app.services.retrieval._query_qdrant", mock_query_qdrant)
 
@@ -147,3 +154,61 @@ class TestCitationSchema:
         assert citations[1]["section"] == "Q4"
         assert "[1] report.pdf (page 5, chunk 2)" in context
         assert "[2] data.xlsx (section Q4, chunk 0)" in context
+
+
+class TestSparseEncoding:
+    def test_sparse_encoding_unique_and_sorted_indices(self):
+        from app.services.embeddings import embed_sparse
+
+        text = "The quick brown fox jumps over the lazy dog and the quick brown fox."
+        sp = embed_sparse(text)
+
+        # Qdrant invariant 1: indices must be strictly unique
+        assert len(sp["indices"]) == len(set(sp["indices"]))
+
+        # Qdrant invariant 2: indices must be sorted ascending
+        assert sp["indices"] == sorted(sp["indices"])
+
+        # Qdrant invariant 3: parallel arrays
+        assert len(sp["indices"]) == len(sp["values"])
+
+    def test_sparse_encoding_filters_stopwords(self):
+        from app.services.embeddings import embed_sparse
+
+        # "The", "and", "of", "is" are stopwords; only "revenue" and "growth" should be indexed
+        sp1 = embed_sparse("revenue growth")
+        sp2 = embed_sparse("the revenue and the growth of is")
+        assert sp1["indices"] == sp2["indices"]
+
+    def test_sparse_encoding_sublinear_tf(self):
+        from app.services.embeddings import embed_sparse
+
+        sp = embed_sparse("revenue revenue revenue")
+        assert len(sp["values"]) == 1
+        # count is 3, 1 + ln(3) ~ 2.0986
+        assert 2.0 < sp["values"][0] < 2.2
+
+    def test_sparse_encoding_empty(self):
+        from app.services.embeddings import embed_sparse
+
+        assert embed_sparse("") == {"indices": [], "values": []}
+
+
+class TestRerankerResilience:
+    def test_rerank_fallback_on_model_error(self, monkeypatch):
+        from app.services.reranker import rerank
+
+        mock_cross = MagicMock()
+        mock_cross.predict.side_effect = RuntimeError("CUDA out of memory")
+        monkeypatch.setattr("app.services.reranker.get_reranker", lambda: mock_cross)
+
+        cands = [
+            {"id": "a", "text": "doc a", "score": 0.8},
+            {"id": "b", "text": "doc b", "score": 0.5},
+        ]
+        # Should not raise exception
+        result = rerank("test query", cands)
+        assert len(result) == 2
+        assert result[0]["id"] == "a"
+        assert result[0]["rerank_score"] == 0.8
+
