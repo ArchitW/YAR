@@ -66,16 +66,18 @@ def upload_document(workspace_id: int, file: UploadFile = File(...), db: Session
     if text:
         ensure_collection()
         chunks = adaptive_chunk(text)
-        dense_vecs = embed(chunks)
+        ctx_chunks = [f"Document: {file.filename}\n\n{chunk}" for chunk in chunks]
+        dense_vecs = embed(ctx_chunks)
         points = []
-        for i, (chunk, dvec) in enumerate(zip(chunks, dense_vecs)):
+        for i, (chunk, ctx_chunk, dvec) in enumerate(zip(chunks, ctx_chunks, dense_vecs)):
             meta = parse_chunk_metadata(chunk)
-            # contextual prefix
-            ctx_chunk = f"Document: {file.filename}\n\n{chunk}"
             sp = embed_sparse(ctx_chunk)
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
-                vector={"dense": embed([ctx_chunk])[0], "sparse": SparseVector(indices=sp["indices"], values=sp["values"])},
+                vector={
+                    "dense": dvec,
+                    "sparse": SparseVector(indices=sp["indices"], values=sp["values"]),
+                },
                 payload={
                     "workspace_id": workspace_id,
                     "document_id": doc.id,
