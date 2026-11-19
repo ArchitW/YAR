@@ -67,6 +67,7 @@ def answer_query(
     message: str,
     mode: str = "auto",
     provider: LLMProvider | None = None,
+    db: Any | None = None,
 ) -> dict[str, Any]:
     """Answer a question from workspace documents.
 
@@ -95,7 +96,23 @@ def answer_query(
             "degraded": True,
         }
 
-    user_prompt = f"Question: {message}\n\nContext:\n{context}"
+    memory_context = ""
+    if db is not None:
+        try:
+            from .memory import MemoryService
+
+            dossier = MemoryService.get_active_dossier(db, workspace_id)
+            memories = MemoryService.retrieve_memories(db, workspace_id, message, top_k=3)
+            memory_context = MemoryService.format_memory_context(dossier, memories)
+        except Exception:
+            logger.warning("Failed to retrieve memory context", exc_info=True)
+
+    prompt_parts = []
+    if memory_context:
+        prompt_parts.append(f"Workspace Context & Memory:\n{memory_context}")
+    prompt_parts.append(f"Question: {message}\n\nContext:\n{context}")
+    user_prompt = "\n\n".join(prompt_parts)
+
     try:
         answer = llm.complete(SYSTEM_PROMPT, user_prompt)
     except ProviderError:

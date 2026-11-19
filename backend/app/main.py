@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .core.database import Base, engine
 from .routers import workspaces, documents, chat, auth
 from .models import chat as _chat_model  # noqa: F401 — register ChatMessage table
+from .models import memory as _memory_model  # noqa: F401 — register MemoryNode & MemoryEdge tables
 
 Base.metadata.create_all(bind=engine)
 

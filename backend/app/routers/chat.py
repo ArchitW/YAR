@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..models.chat import ChatMessage
 from ..services.chat import answer_query
+from ..services.memory import MemoryService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -27,7 +28,7 @@ class ChatResponse(BaseModel):
 
 @router.post("", response_model=ChatResponse)
 def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
-    # Persist user message
+    # 1. Persist user message to chat history
     user_msg = ChatMessage(
         workspace_id=req.workspace_id,
         role="user",
@@ -35,9 +36,17 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     )
     db.add(user_msg)
 
-    result = answer_query(req.workspace_id, req.message, req.mode)
+    # 2. Record interaction in cognitive memory stream
+    try:
+        MemoryService.record_interaction(db, req.workspace_id, "user", req.message)
+    except Exception:
+        # Memory logging failure should never crash the chat session
+        pass
 
-    # Persist assistant response
+    # 3. Answer query with document retrieval + memory context
+    result = answer_query(req.workspace_id, req.message, req.mode, db=db)
+
+    # 4. Persist assistant response to chat history
     assistant_msg = ChatMessage(
         workspace_id=req.workspace_id,
         role="assistant",
@@ -48,6 +57,13 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
         degraded=result["degraded"],
     )
     db.add(assistant_msg)
+
+    # 5. Record assistant response in cognitive memory stream
+    try:
+        MemoryService.record_interaction(db, req.workspace_id, "assistant", result["answer"])
+    except Exception:
+        pass
+
     db.commit()
 
     return ChatResponse(**result)
