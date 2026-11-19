@@ -1,8 +1,7 @@
+import bcrypt
 from sqlalchemy import Column, Integer, String, DateTime, func
-from passlib.context import CryptContext
 from ..core.database import Base
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 class User(Base):
     __tablename__ = "users"
@@ -13,10 +12,13 @@ class User(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     def set_password(self, password: str):
-        self.password_hash = pwd_context.hash(password)
+        salt = bcrypt.gensalt()
+        self.password_hash = bcrypt.hashpw(password.encode("utf-8")[:72], salt).decode("utf-8")
 
     def verify_password(self, password: str) -> bool:
-        return pwd_context.verify(password, self.password_hash)
+        if not self.password_hash:
+            return False
+        return bcrypt.checkpw(password.encode("utf-8")[:72], self.password_hash.encode("utf-8"))
 
 class Workspace(Base):
     __tablename__ = "workspaces"
