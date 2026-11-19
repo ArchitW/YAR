@@ -2,7 +2,6 @@ import logging
 import os
 import shutil
 import uuid
-import re
 from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
@@ -12,6 +11,7 @@ from ..core.config import UPLOAD_DIR
 from ..models.document import Document
 from ..services.embeddings import embed, embed_sparse
 from ..services.chunking import adaptive_chunk
+from ..services.extraction import extract_text, is_supported
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +28,6 @@ def ensure_collection():
             sparse_vectors_config={"sparse": SparseVectorParams()},
         )
 
-def extract_text(path: str, content_type: str) -> str:
-    if "text" in (content_type or "") or path.endswith(".txt"):
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
-    return ""
 
 @router.post("/upload")
 def upload_document(workspace_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -47,10 +42,10 @@ def upload_document(workspace_id: int, file: UploadFile = File(...), db: Session
         text = ""
     if text:
         status = "indexed"
-    elif file.content_type and "text" not in file.content_type and not dest.endswith(".txt"):
+    elif not is_supported(dest, file.content_type):
         status = "queued"          # unsupported format, awaiting future parser
     else:
-        status = "error"           # extraction was expected to work but didn't
+        status = "error"           # parser matched but extraction produced nothing
     doc = Document(workspace_id=workspace_id, name=file.filename, file_type=file.content_type or "unknown", status=status, size_bytes=size, content=text)
     db.add(doc)
     db.commit()

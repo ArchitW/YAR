@@ -130,3 +130,13 @@ def extract_text(path: str, content_type: str | None = None) -> str:
         return ""
 
     return extractor(path)
+
+
+def is_supported(path: str, content_type: str | None = None) -> bool:
+    """Return True if extract_text would attempt parsing for this file."""
+    suffix = Path(path).suffix.lower()
+    if suffix in _EXTRACTORS_BY_SUFFIX:
+        return True
+    if content_type and "text" in content_type:
+        return True
+    return False
