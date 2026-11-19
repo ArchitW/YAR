@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -7,7 +9,11 @@ from ..core.database import get_db
 from ..models.user import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-SECRET = "dev-secret-change-me"
+
+_secret = os.getenv("JWT_SECRET", "")
+if not _secret:
+    raise RuntimeError("JWT_SECRET environment variable is required")
+SECRET: str = _secret
 ALGO = "HS256"
 
 class AuthReq(BaseModel):
