@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import uuid
@@ -11,6 +12,8 @@ from ..core.config import UPLOAD_DIR
 from ..models.document import Document
 from ..services.embeddings import embed, embed_sparse
 from ..services.chunking import adaptive_chunk
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -26,12 +29,9 @@ def ensure_collection():
         )
 
 def extract_text(path: str, content_type: str) -> str:
-    try:
-        if "text" in (content_type or "") or path.endswith(".txt"):
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                return f.read()
-    except Exception:
-        return ""
+    if "text" in (content_type or "") or path.endswith(".txt"):
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
     return ""
 
 @router.post("/upload")
@@ -40,8 +40,18 @@ def upload_document(workspace_id: int, file: UploadFile = File(...), db: Session
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     size = os.path.getsize(dest)
-    text = extract_text(dest, file.content_type)
-    doc = Document(workspace_id=workspace_id, name=file.filename, file_type=file.content_type or "unknown", status="indexed" if text else "queued", size_bytes=size, content=text)
+    try:
+        text = extract_text(dest, file.content_type)
+    except Exception:
+        logger.exception("Failed to extract text from %s", file.filename)
+        text = ""
+    if text:
+        status = "indexed"
+    elif file.content_type and "text" not in file.content_type and not dest.endswith(".txt"):
+        status = "queued"          # unsupported format, awaiting future parser
+    else:
+        status = "error"           # extraction was expected to work but didn't
+    doc = Document(workspace_id=workspace_id, name=file.filename, file_type=file.content_type or "unknown", status=status, size_bytes=size, content=text)
     db.add(doc)
     db.commit()
     db.refresh(doc)
