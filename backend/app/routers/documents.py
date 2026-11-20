@@ -4,13 +4,24 @@ import re
 import shutil
 import uuid
 from typing import Any
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, status
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, PointStruct, SparseVector, SparseVectorParams
+from qdrant_client.models import (
+    VectorParams,
+    Distance,
+    PointStruct,
+    SparseVector,
+    SparseVectorParams,
+    FieldCondition,
+    Filter,
+    MatchValue,
+)
 from ..core.database import get_db
 from ..core.config import UPLOAD_DIR
+from ..core.middleware import get_request_trace_id
 from ..models.document import Document
+from ..services.audit import AuditService
 from ..services.embeddings import embed, embed_late_chunks, embed_sparse
 from ..services.chunking import adaptive_chunk
 from ..services.extraction import extract_text, is_supported
@@ -47,7 +58,13 @@ def parse_chunk_metadata(chunk: str) -> dict[str, Any]:
 
 
 @router.post("/upload")
-def upload_document(workspace_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def upload_document(
+    workspace_id: int,
+    file: UploadFile = File(...),
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    trace_id = get_request_trace_id(request)
     dest = os.path.join(UPLOAD_DIR, file.filename)
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -58,15 +75,33 @@ def upload_document(workspace_id: int, file: UploadFile = File(...), db: Session
         logger.exception("Failed to extract text from %s", file.filename)
         text = ""
     if text:
-        status = "indexed"
+        status_val = "indexed"
     elif not is_supported(dest, file.content_type):
-        status = "queued"          # unsupported format, awaiting future parser
+        status_val = "queued"          # unsupported format, awaiting future parser
     else:
-        status = "error"           # parser matched but extraction produced nothing
-    doc = Document(workspace_id=workspace_id, name=file.filename, file_type=file.content_type or "unknown", status=status, size_bytes=size, content=text)
+        status_val = "error"           # parser matched but extraction produced nothing
+    doc = Document(
+        workspace_id=workspace_id,
+        name=file.filename,
+        file_type=file.content_type or "unknown",
+        status=status_val,
+        size_bytes=size,
+        content=text,
+    )
     db.add(doc)
     db.commit()
     db.refresh(doc)
+
+    AuditService.record(
+        db=db,
+        event_type="document.upload",
+        summary=f"Uploaded '{file.filename}' ({size} bytes, status: {status_val})",
+        status="success" if status_val != "error" else "failure",
+        trace_id=trace_id,
+        workspace_id=workspace_id,
+        metadata={"filename": file.filename, "size_bytes": size, "status": status_val},
+    )
+
     if text:
         ensure_collection()
         chunks = adaptive_chunk(text)
@@ -101,3 +136,48 @@ def upload_document(workspace_id: int, file: UploadFile = File(...), db: Session
 @router.get("")
 def list_documents(workspace_id: int, db: Session = Depends(get_db)):
     return db.query(Document).filter(Document.workspace_id == workspace_id).all()
+
+
+@router.delete("/{document_id}")
+def delete_document(
+    document_id: int,
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    """Delete a document, purge vectors from Qdrant, and record an audit log."""
+    trace_id = get_request_trace_id(request)
+    doc = db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document {document_id} not found",
+        )
+
+    # Purge vectors from Qdrant
+    try:
+        qdrant.delete(
+            COLLECTION,
+            points_selector=Filter(
+                must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
+            ),
+        )
+    except Exception:
+        logger.warning("Could not sync Qdrant vector deletion for document %s", document_id, exc_info=True)
+
+    workspace_id = doc.workspace_id
+    doc_name = doc.name
+
+    db.delete(doc)
+    db.commit()
+
+    AuditService.record(
+        db=db,
+        event_type="document.delete",
+        summary=f"Deleted document '{doc_name}' (ID: {document_id})",
+        status="success",
+        trace_id=trace_id,
+        workspace_id=workspace_id,
+        metadata={"document_id": document_id, "name": doc_name},
+    )
+
+    return {"deleted": True, "id": document_id}

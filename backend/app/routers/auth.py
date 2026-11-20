@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel, ConfigDict
@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 
 from ..core.config import auth_enabled, jwt_secret
 from ..core.database import get_db
+from ..core.middleware import get_request_trace_id
 from ..models.user import User
+from ..services.audit import AuditService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer(auto_error=False)
@@ -119,9 +121,22 @@ def register(req: AuthReq, db: Session = Depends(get_db)) -> UserResponse:
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(req: AuthReq, db: Session = Depends(get_db)) -> LoginResponse:
+def login(
+    req: AuthReq,
+    request: Request = None,
+    db: Session = Depends(get_db),
+) -> LoginResponse:
+    trace_id = get_request_trace_id(request)
     u = db.query(User).filter(User.email == req.email).first()
     if not u or not u.verify_password(req.password):
+        AuditService.record(
+            db=db,
+            event_type="auth.login",
+            summary=f"Failed login attempt for '{req.email}'",
+            status="failure",
+            trace_id=trace_id,
+            metadata={"email": req.email},
+        )
         raise HTTPException(status_code=401, detail="invalid credentials")
 
     token = jwt.encode(
@@ -129,6 +144,17 @@ def login(req: AuthReq, db: Session = Depends(get_db)) -> LoginResponse:
         jwt_secret(),
         algorithm=ALGO,
     )
+
+    AuditService.record(
+        db=db,
+        event_type="auth.login",
+        summary=f"User '{u.email}' logged in successfully",
+        status="success",
+        user_id=u.id,
+        trace_id=trace_id,
+        metadata={"email": u.email, "role": u.role},
+    )
+
     return LoginResponse(
         access_token=token,
         token_type="bearer",
@@ -143,6 +169,19 @@ def get_me(current_user: User = Depends(get_current_user)) -> UserResponse:
 
 
 @router.post("/logout")
-def logout(current_user: User = Depends(get_current_user)) -> dict[str, str]:
+def logout(
+    request: Request = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
     """Logout session confirmation."""
+    trace_id = get_request_trace_id(request)
+    AuditService.record(
+        db=db,
+        event_type="auth.logout",
+        summary=f"User '{current_user.email}' logged out",
+        status="success",
+        user_id=current_user.id,
+        trace_id=trace_id,
+    )
     return {"message": "successfully logged out"}

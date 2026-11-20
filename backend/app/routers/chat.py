@@ -1,12 +1,15 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from ..core.database import get_db
+from ..core.middleware import get_request_trace_id
 from ..models.chat import ChatMessage
+from ..services.audit import AuditService
 from ..services.chat import answer_query
+from ..services.export import ExportService
 from ..services.memory import MemoryService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -27,7 +30,13 @@ class ChatResponse(BaseModel):
 
 
 @router.post("", response_model=ChatResponse)
-def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
+def chat(
+    req: ChatRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+) -> ChatResponse:
+    trace_id = get_request_trace_id(request)
+
     # 1. Persist user message to chat history
     user_msg = ChatMessage(
         workspace_id=req.workspace_id,
@@ -63,6 +72,22 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
         MemoryService.record_interaction(db, req.workspace_id, "assistant", result["answer"])
     except Exception:
         pass
+
+    # 6. Record audit log for chat query
+    AuditService.record(
+        db=db,
+        event_type="chat.query",
+        summary=f"Processed query in workspace {req.workspace_id}",
+        status="warning" if result.get("degraded") else "success",
+        trace_id=trace_id,
+        workspace_id=req.workspace_id,
+        metadata={
+            "provider": result.get("provider"),
+            "model": result.get("model"),
+            "citations_count": len(result.get("citations", [])),
+            "degraded": result.get("degraded", False),
+        },
+    )
 
     db.commit()
 
@@ -108,3 +133,49 @@ def chat_history(
         )
         for r in rows
     ]
+
+
+@router.get("/export")
+@router.post("/export")
+def export_chat(
+    workspace_id: int = Query(...),
+    export_format: str = Query("markdown", alias="format"),
+    request: Request = None,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Export workspace conversation history to Markdown, JSON, or Plaintext format."""
+    trace_id = get_request_trace_id(request)
+    fmt = export_format.lower().strip()
+
+    if fmt in ("md", "markdown"):
+        content, filename = ExportService.export_markdown(db, workspace_id)
+        media_type = "text/markdown; charset=utf-8"
+    elif fmt == "json":
+        content, filename = ExportService.export_json(db, workspace_id)
+        media_type = "application/json; charset=utf-8"
+    elif fmt in ("txt", "text"):
+        content, filename = ExportService.export_txt(db, workspace_id)
+        media_type = "text/plain; charset=utf-8"
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported export format '{export_format}'. Supported formats: markdown, json, txt",
+        )
+
+    AuditService.record(
+        db=db,
+        event_type="export.chat",
+        summary=f"Exported workspace {workspace_id} conversation as {fmt}",
+        status="success",
+        trace_id=trace_id,
+        workspace_id=workspace_id,
+        metadata={"format": fmt, "filename": filename},
+    )
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
