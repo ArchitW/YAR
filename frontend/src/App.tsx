@@ -1,42 +1,31 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   AlertCircle,
   BookOpen,
   Eye,
   EyeOff,
   FileText,
+  Files,
   Layers,
   Send,
   Sparkles,
   X,
 } from "lucide-react";
-
-interface Citation {
-  index: number;
-  document_id?: number;
-  file_name?: string;
-  page_number?: number | null;
-  section?: string | null;
-  chunk_index?: number | null;
-  total_chunks?: number | null;
-  text?: string;
-  chunk_text?: string;
-  score?: number;
-}
-
-interface Message {
-  id?: number;
-  role: "user" | "assistant";
-  text: string;
-  citations?: Citation[];
-  provider?: string;
-  model?: string;
-  degraded?: boolean;
-}
+import { Citation, DocumentItem, Message, Workspace } from "./types";
+import WorkspaceSelector from "./components/WorkspaceSelector";
+import WorkspaceModal from "./components/WorkspaceModal";
+import DocumentDropzone from "./components/DocumentDropzone";
+import DocumentList from "./components/DocumentList";
 
 const API_BASE = "http://localhost:8000";
 
 export default function App() {
+  // Workspace state
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
+  const [workspaceModalMode, setWorkspaceModalMode] = useState<"create" | "edit" | null>(null);
+
+  // Chat & Retrieval state
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
@@ -44,14 +33,57 @@ export default function App() {
   const [showCitations, setShowCitations] = useState(true);
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
 
-  // Load chat history on mount
+  // Document Management Drawer state
+  const [isDocumentsOpen, setIsDocumentsOpen] = useState(false);
+  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [isLoadingDocs, setIsLoadingDocs] = useState(false);
+
+  // 1. Fetch or initialize workspaces on mount
   useEffect(() => {
-    fetch(`${API_BASE}/chat/history?workspace_id=1`)
-      .then((res) => (res.ok ? res.json() : []))
-      .then((data: any[]) => {
+    fetchWorkspaces();
+  }, []);
+
+  const fetchWorkspaces = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/workspaces`);
+      if (!res.ok) throw new Error("Failed to load workspaces");
+      const data: Workspace[] = await res.json();
+
+      if (data.length === 0) {
+        // Initialize default workspace
+        const initRes = await fetch(`${API_BASE}/workspaces?name=Default%20Workspace&description=Default%20knowledge%20workspace`, {
+          method: "POST",
+        });
+        if (initRes.ok) {
+          const defaultWs = await initRes.json();
+          setWorkspaces([defaultWs]);
+          setActiveWorkspace(defaultWs);
+          localStorage.setItem("yar_active_ws", String(defaultWs.id));
+        }
+      } else {
+        setWorkspaces(data);
+        const savedWsId = localStorage.getItem("yar_active_ws");
+        const found = data.find((w) => String(w.id) === savedWsId);
+        const selected = found || data[0];
+        setActiveWorkspace(selected);
+      }
+    } catch {
+      // Backend starting or offline
+    }
+  };
+
+  // 2. Load scoped chat history & documents whenever active workspace changes
+  const loadWorkspaceData = useCallback(async (wsId: number) => {
+    setActiveCitation(null);
+
+    // Load chat history
+    try {
+      const res = await fetch(`${API_BASE}/chat/history?workspace_id=${wsId}`);
+      if (res.ok) {
+        const data = await res.json();
         if (Array.isArray(data)) {
           setMessages(
-            data.map((item) => ({
+            data.map((item: any) => ({
               id: item.id,
               role: item.role as "user" | "assistant",
               text: item.content,
@@ -62,14 +94,73 @@ export default function App() {
             }))
           );
         }
-      })
-      .catch(() => {
-        // Backend might be offline or starting up
-      });
+      } else {
+        setMessages([]);
+      }
+    } catch {
+      setMessages([]);
+    }
+
+    // Load documents
+    setIsLoadingDocs(true);
+    try {
+      const docRes = await fetch(`${API_BASE}/documents?workspace_id=${wsId}`);
+      if (docRes.ok) {
+        const docData = await docRes.json();
+        setDocuments(docData);
+      } else {
+        setDocuments([]);
+      }
+    } catch {
+      setDocuments([]);
+    } finally {
+      setIsLoadingDocs(false);
+    }
   }, []);
 
+  useEffect(() => {
+    if (activeWorkspace) {
+      localStorage.setItem("yar_active_ws", String(activeWorkspace.id));
+      loadWorkspaceData(activeWorkspace.id);
+    }
+  }, [activeWorkspace, loadWorkspaceData]);
+
+  // Workspace CRUD handlers
+  const handleSaveWorkspace = async (name: string, description: string) => {
+    if (workspaceModalMode === "create") {
+      const params = new URLSearchParams({ name, description });
+      const res = await fetch(`${API_BASE}/workspaces?${params.toString()}`, { method: "POST" });
+      if (!res.ok) throw new Error("Failed to create workspace");
+      const created: Workspace = await res.json();
+      setWorkspaces((prev) => [...prev, created]);
+      setActiveWorkspace(created);
+    } else if (workspaceModalMode === "edit" && activeWorkspace) {
+      const params = new URLSearchParams({ name, description });
+      const res = await fetch(`${API_BASE}/workspaces/${activeWorkspace.id}?${params.toString()}`, {
+        method: "PATCH",
+      });
+      if (!res.ok) throw new Error("Failed to update workspace");
+      const updated: Workspace = await res.json();
+      setWorkspaces((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
+      setActiveWorkspace(updated);
+    }
+  };
+
+  const handleDeleteWorkspace = async (id: number) => {
+    const res = await fetch(`${API_BASE}/workspaces/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("Failed to delete workspace");
+    const remaining = workspaces.filter((w) => w.id !== id);
+    setWorkspaces(remaining);
+    if (remaining.length > 0) {
+      setActiveWorkspace(remaining[0]);
+    } else {
+      await fetchWorkspaces();
+    }
+  };
+
+  // Send message
   const send = async () => {
-    if (!input.trim() || loading) return;
+    if (!input.trim() || loading || !activeWorkspace) return;
     const userQuery = input.trim();
     setInput("");
     setMessages((prev) => [...prev, { role: "user", text: userQuery }]);
@@ -80,15 +171,13 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          workspace_id: 1,
+          workspace_id: activeWorkspace.id,
           message: userQuery,
           mode,
         }),
       });
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
       const data = await res.json();
       setMessages((prev) => [
@@ -121,30 +210,50 @@ export default function App() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <header className="h-14 px-4 border-b bg-white flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <span className="font-bold text-lg text-slate-800 tracking-tight">YAR</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
-              Retrieval Chat
-            </span>
+            {/* Workspace Selector */}
+            <WorkspaceSelector
+              workspaces={workspaces}
+              activeWorkspace={activeWorkspace}
+              onSelectWorkspace={setActiveWorkspace}
+              onOpenCreateModal={() => setWorkspaceModalMode("create")}
+              onOpenEditModal={() => setWorkspaceModalMode("edit")}
+            />
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Documents Drawer Toggle */}
+            <button
+              onClick={() => setIsDocumentsOpen(!isDocumentsOpen)}
+              className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                isDocumentsOpen
+                  ? "bg-blue-50 text-blue-700 border-blue-200"
+                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              }`}
+              aria-label="Toggle documents panel"
+            >
+              <Files className="w-3.5 h-3.5" />
+              <span>Documents</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-slate-100 text-[10px] font-mono text-slate-600">
+                {documents.length}
+              </span>
+            </button>
+
             {/* Retrieval Mode Selector */}
-            <div className="flex items-center gap-1.5 text-xs text-slate-600">
+            <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-600">
               <Layers className="w-3.5 h-3.5 text-slate-400" />
-              <label htmlFor="mode-select" className="hidden sm:inline">
-                Mode:
-              </label>
               <select
                 id="mode-select"
+                aria-label="Retrieval Mode"
                 value={mode}
                 onChange={(e) => setMode(e.target.value as any)}
                 className="bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="auto">Auto (Hybrid)</option>
-                <option value="hybrid">Hybrid (Dense + Sparse)</option>
-                <option value="semantic">Semantic (Dense)</option>
-                <option value="keyword">Keyword (Sparse)</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="semantic">Semantic</option>
+                <option value="keyword">Keyword</option>
               </select>
             </div>
 
@@ -171,10 +280,11 @@ export default function App() {
           {messages.length === 0 && (
             <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
               <BookOpen className="w-12 h-12 stroke-[1.5] mb-3 text-slate-300" />
-              <p className="text-sm font-medium text-slate-600">No conversation yet</p>
+              <p className="text-sm font-medium text-slate-600">
+                {activeWorkspace ? `Ready in "${activeWorkspace.name}"` : "No conversation yet"}
+              </p>
               <p className="text-xs max-w-sm mt-1">
-                Upload documents to workspace and ask questions to get grounded answers with
-                citations.
+                Upload files to this workspace via the Documents drawer to get grounded answers with citations.
               </p>
             </div>
           )}
@@ -259,12 +369,12 @@ export default function App() {
               className="flex-1 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50/50"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask a question about your documents..."
-              disabled={loading}
+              placeholder={activeWorkspace ? `Ask a question in "${activeWorkspace.name}"...` : "Ask a question..."}
+              disabled={loading || !activeWorkspace}
             />
             <button
               type="submit"
-              disabled={loading || !input.trim()}
+              disabled={loading || !input.trim() || !activeWorkspace}
               className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5 shadow-sm"
             >
               <Send className="w-4 h-4" />
@@ -273,6 +383,48 @@ export default function App() {
           </form>
         </footer>
       </div>
+
+      {/* Documents Drawer Side Panel */}
+      {isDocumentsOpen && activeWorkspace && (
+        <aside className="w-80 sm:w-96 border-l bg-white flex flex-col h-full shadow-lg z-20 animate-in slide-in-from-right-4 duration-150">
+          <div className="h-14 px-4 border-b flex items-center justify-between bg-slate-50/70">
+            <div className="flex items-center gap-2">
+              <Files className="w-4 h-4 text-blue-600" />
+              <h3 className="font-semibold text-sm text-slate-800">
+                Workspace Knowledge
+              </h3>
+            </div>
+            <button
+              onClick={() => setIsDocumentsOpen(false)}
+              aria-label="Close documents panel"
+              className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-200/60"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-5">
+            {/* Upload Dropzone */}
+            <div>
+              <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                Upload New Files
+              </h4>
+              <DocumentDropzone
+                workspaceId={activeWorkspace.id}
+                onUploadSuccess={() => loadWorkspaceData(activeWorkspace.id)}
+              />
+            </div>
+
+            {/* Document List */}
+            <DocumentList
+              documents={documents}
+              isLoading={isLoadingDocs}
+              onRefresh={() => loadWorkspaceData(activeWorkspace.id)}
+              workspaceName={activeWorkspace.name}
+            />
+          </div>
+        </aside>
+      )}
 
       {/* Citation Inspector Side Panel */}
       {activeCitation && (
@@ -286,6 +438,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setActiveCitation(null)}
+              aria-label="Close citation details"
               className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-200/60"
             >
               <X className="w-4 h-4" />
@@ -366,6 +519,16 @@ export default function App() {
           </div>
         </aside>
       )}
+
+      {/* Workspace Create / Edit Modal */}
+      <WorkspaceModal
+        mode={workspaceModalMode || "create"}
+        isOpen={workspaceModalMode !== null}
+        onClose={() => setWorkspaceModalMode(null)}
+        activeWorkspace={workspaceModalMode === "edit" ? activeWorkspace : null}
+        onSave={handleSaveWorkspace}
+        onDelete={handleDeleteWorkspace}
+      />
     </div>
   );
 }
