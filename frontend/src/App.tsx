@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   AlertCircle,
   BookOpen,
+  Brain,
   Eye,
   EyeOff,
   FileText,
@@ -16,6 +17,7 @@ import WorkspaceSelector from "./components/WorkspaceSelector";
 import WorkspaceModal from "./components/WorkspaceModal";
 import DocumentDropzone from "./components/DocumentDropzone";
 import DocumentList from "./components/DocumentList";
+import MemoryInspector from "./components/MemoryInspector";
 
 const API_BASE = "http://localhost:8000";
 
@@ -37,6 +39,9 @@ export default function App() {
   const [isDocumentsOpen, setIsDocumentsOpen] = useState(false);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isLoadingDocs, setIsLoadingDocs] = useState(false);
+
+  // Cognitive Memory & Dossier Drawer state
+  const [isMemoryOpen, setIsMemoryOpen] = useState(false);
 
   // 1. Fetch or initialize workspaces on mount
   useEffect(() => {
@@ -223,9 +228,35 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Cognitive Memory & Living Dossier Drawer Toggle */}
+            <button
+              onClick={() => {
+                setIsMemoryOpen(!isMemoryOpen);
+                if (!isMemoryOpen) {
+                  setIsDocumentsOpen(false);
+                  setActiveCitation(null);
+                }
+              }}
+              className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                isMemoryOpen
+                  ? "bg-purple-50 text-purple-700 border-purple-200"
+                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              }`}
+              aria-label="Toggle memory and dossier panel"
+            >
+              <Brain className="w-3.5 h-3.5 text-purple-600" />
+              <span>Memory</span>
+            </button>
+
             {/* Documents Drawer Toggle */}
             <button
-              onClick={() => setIsDocumentsOpen(!isDocumentsOpen)}
+              onClick={() => {
+                setIsDocumentsOpen(!isDocumentsOpen);
+                if (!isDocumentsOpen) {
+                  setIsMemoryOpen(false);
+                  setActiveCitation(null);
+                }
+              }}
               className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors ${
                 isDocumentsOpen
                   ? "bg-blue-50 text-blue-700 border-blue-200"
@@ -383,6 +414,17 @@ export default function App() {
           </form>
         </footer>
       </div>
+
+      {/* Memory & Living Dossier Side Panel */}
+      {activeWorkspace && (
+        <MemoryInspector
+          workspaceId={activeWorkspace.id}
+          workspaceName={activeWorkspace.name}
+          isOpen={isMemoryOpen}
+          onClose={() => setIsMemoryOpen(false)}
+          apiBase={API_BASE}
+        />
+      )}
 
       {/* Documents Drawer Side Panel */}
       {isDocumentsOpen && activeWorkspace && (

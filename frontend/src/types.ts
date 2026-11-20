@@ -42,3 +42,30 @@ export interface Message {
   model?: string;
   degraded?: boolean;
 }
+
+export interface MemoryNodeItem {
+  id: string;
+  workspace_id: number;
+  user_id?: number | null;
+  node_type: "episodic_memory" | "entity" | "user_preference" | "concept" | "dream_insight" | string;
+  name: string;
+  content: string;
+  summary?: string | null;
+  importance_score: number;
+  confidence: number;
+  properties?: Record<string, any>;
+  access_count: number;
+  last_accessed_at?: string | null;
+  created_at?: string | null;
+  invalidated_at?: string | null;
+}
+
+export interface DreamStatusData {
+  workspace_id: number;
+  total_memories: number;
+  active_nodes: number;
+  invalidated_nodes: number;
+  counts_by_type: Record<string, number>;
+  total_edges: number;
+}
+
