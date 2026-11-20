@@ -22,13 +22,17 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
 COLLECTION = "yar_chunks"
 
-def ensure_collection():
-    if not qdrant.collection_exists(COLLECTION):
-        qdrant.create_collection(
-            COLLECTION,
-            vectors_config={"dense": VectorParams(size=1024, distance=Distance.COSINE)},
-            sparse_vectors_config={"sparse": SparseVectorParams()},
-        )
+def ensure_collection(client: Any | None = None):
+    target = client or qdrant
+    try:
+        if hasattr(target, "collection_exists") and not target.collection_exists(COLLECTION):
+            target.create_collection(
+                COLLECTION,
+                vectors_config={"dense": VectorParams(size=1024, distance=Distance.COSINE)},
+                sparse_vectors_config={"sparse": SparseVectorParams()},
+            )
+    except Exception:
+        logger.warning("Failed to verify/create Qdrant collection", exc_info=True)
 
 
 def parse_chunk_metadata(chunk: str) -> dict[str, Any]:

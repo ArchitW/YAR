@@ -49,6 +49,9 @@ def build_context(hits: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]
         if hit.get("timestamp"):
             loc_details.append(f"time {hit['timestamp']}")
         location = f"{file_name} ({', '.join(loc_details)})" if loc_details else file_name
+        if hit.get("is_dream"):
+            title = hit.get("dream_title") or file_name
+            location = f"[Dream Insight: {title}]"
         blocks.append(f"[{citation['index']}] {location}\n{text}")
         citations.append(citation)
     return "\n\n".join(blocks), citations

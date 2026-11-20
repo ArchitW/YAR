@@ -137,6 +137,9 @@ def retrieve(
             "page_number": pl.get("page_number"),
             "section": pl.get("section"),
             "timestamp": pl.get("timestamp"),
+            "is_dream": bool(pl.get("is_dream", False)),
+            "dream_insight_id": pl.get("dream_insight_id"),
+            "dream_title": pl.get("dream_title"),
         })
 
     cands = rerank(query, cands)
