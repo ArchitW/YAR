@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .core.database import Base, engine
 from .core.middleware import TraceIDMiddleware
-from .routers import workspaces, documents, chat, auth, memory, audit, connectors
+from .routers import workspaces, documents, chat, auth, memory, audit, connectors, health
 from .models import chat as _chat_model  # noqa: F401 — register ChatMessage table
 from .models import memory as _memory_model  # noqa: F401 — register MemoryNode & MemoryEdge tables
 from .models import audit as _audit_model  # noqa: F401 — register AuditLog table
@@ -28,3 +28,4 @@ app.include_router(auth.router)
 app.include_router(memory.router)
 app.include_router(audit.router)
 app.include_router(connectors.router)
+app.include_router(health.router)

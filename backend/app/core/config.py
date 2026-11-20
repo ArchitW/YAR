@@ -7,6 +7,8 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/yar.db")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", f"{BASE_DIR}/uploads")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 
 
 def llm_settings() -> dict[str, str]:
