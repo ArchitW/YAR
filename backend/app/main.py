@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .core.database import Base, engine
-from .routers import workspaces, documents, chat, auth
+from .routers import workspaces, documents, chat, auth, memory
 from .models import chat as _chat_model  # noqa: F401 — register ChatMessage table
 from .models import memory as _memory_model  # noqa: F401 — register MemoryNode & MemoryEdge tables
 
@@ -19,3 +19,4 @@ app.include_router(workspaces.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(auth.router)
+app.include_router(memory.router)
