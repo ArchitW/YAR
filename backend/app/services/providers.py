@@ -6,7 +6,8 @@ URLs are stored in the repository.
 
 from __future__ import annotations
 
-from typing import Protocol
+import json
+from typing import Iterator, Protocol
 
 import httpx
 
@@ -22,6 +23,8 @@ class LLMProvider(Protocol):
     model: str
 
     def complete(self, system_prompt: str, user_prompt: str) -> str: ...
+
+    def stream_complete(self, system_prompt: str, user_prompt: str) -> Iterator[str]: ...
 
 
 class OpenAICompatibleProvider:
@@ -79,6 +82,47 @@ class OpenAICompatibleProvider:
         if not isinstance(content, str) or not content.strip():
             raise ProviderError("provider returned an empty completion")
         return content.strip()
+
+    def stream_complete(self, system_prompt: str, user_prompt: str) -> Iterator[str]:
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        payload = {
+            "model": self.model,
+            "temperature": 0.1,
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        line = line.strip()
+                        if line.startswith("data: "):
+                            data_str = line[6:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_str)
+                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                content = delta.get("content")
+                                if content:
+                                    yield content
+                            except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                                continue
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"provider stream request failed: {exc}") from exc
 
 
 def get_provider() -> LLMProvider | None:

@@ -172,7 +172,7 @@ export default function App() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/chat`, {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -182,28 +182,136 @@ export default function App() {
         }),
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Fallback to unary /chat if stream endpoint fails
+        const unaryRes = await fetch(`${API_BASE}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workspace_id: activeWorkspace.id,
+            message: userQuery,
+            mode,
+          }),
+        });
+        if (!unaryRes.ok) throw new Error(`HTTP ${unaryRes.status}`);
+        const data = await unaryRes.json();
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            text: data.answer,
+            citations: data.citations || [],
+            provider: data.provider,
+            model: data.model,
+            degraded: data.degraded,
+          },
+        ]);
+        return;
+      }
 
-      const data = await res.json();
+      if (!res.body) throw new Error("No readable stream in response");
+
+      // Append initial assistant placeholder
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: data.answer,
-          citations: data.citations || [],
-          provider: data.provider,
-          model: data.model,
-          degraded: data.degraded,
+          text: "",
+          citations: [],
+          provider: "",
+          model: "",
+          degraded: false,
         },
       ]);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (trimmed.startsWith("data: ")) {
+            try {
+              const event = JSON.parse(trimmed.slice(6));
+              if (event.type === "init") {
+                setMessages((prev) => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last && last.role === "assistant") {
+                    next[next.length - 1] = {
+                      ...last,
+                      citations: event.citations || [],
+                      provider: event.provider,
+                      model: event.model,
+                      degraded: event.degraded,
+                    };
+                  }
+                  return next;
+                });
+              } else if (event.type === "token") {
+                setMessages((prev) => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last && last.role === "assistant") {
+                    next[next.length - 1] = {
+                      ...last,
+                      text: last.text + event.token,
+                    };
+                  }
+                  return next;
+                });
+              } else if (event.type === "done") {
+                setMessages((prev) => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last && last.role === "assistant") {
+                    next[next.length - 1] = {
+                      ...last,
+                      text: event.answer || last.text,
+                      citations: event.citations || last.citations,
+                      provider: event.provider || last.provider,
+                      model: event.model || last.model,
+                      degraded: event.degraded ?? last.degraded,
+                    };
+                  }
+                  return next;
+                });
+              }
+            } catch {
+              // Ignore partial JSON parse errors
+            }
+          }
+        }
+      }
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          text: "Error contacting backend service. Please ensure the API is running.",
-        },
-      ]);
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last && last.role === "assistant" && !last.text) {
+          next[next.length - 1] = {
+            ...last,
+            text: "Error contacting backend service. Please ensure the API is running.",
+          };
+          return next;
+        } else if (last && last.role === "user") {
+          return [
+            ...next,
+            {
+              role: "assistant",
+              text: "Error contacting backend service. Please ensure the API is running.",
+            },
+          ];
+        }
+        return next;
+      });
     } finally {
       setLoading(false);
     }
@@ -340,7 +448,12 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="whitespace-pre-wrap">{m.text}</div>
+                <div className="whitespace-pre-wrap">
+                  {m.text}
+                  {loading && idx === messages.length - 1 && m.role === "assistant" && (
+                    <span className="inline-block w-1.5 h-4 ml-0.5 bg-blue-500 animate-pulse align-middle" />
+                  )}
+                </div>
 
                 {/* Citations List */}
                 {m.role === "assistant" &&
@@ -379,7 +492,7 @@ export default function App() {
             </div>
           ))}
 
-          {loading && (
+          {loading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
             <div className="flex items-center gap-2 text-xs text-slate-400 py-2">
               <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
               <span>Searching workspace documents & synthesizing response...</span>

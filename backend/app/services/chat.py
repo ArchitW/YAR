@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Iterator
 
 from .providers import LLMProvider, ProviderError, get_provider
 from .retrieval import retrieve
@@ -139,3 +139,127 @@ def answer_query(
         "model": llm.model,
         "degraded": False,
     }
+
+
+def stream_answer_query(
+    workspace_id: int,
+    message: str,
+    mode: str = "auto",
+    provider: LLMProvider | None = None,
+    db: Any | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Stream an answer grounded in retrieved workspace chunks.
+
+    Yields structured dictionary events:
+    - {"type": "init", "citations": [...], "provider": "...", "model": "...", "degraded": bool}
+    - {"type": "token", "token": "..."}
+    - {"type": "done", "answer": "...", "citations": [...], ...}
+    """
+    hits = retrieve(workspace_id, message, mode)
+    context, citations = build_context(hits)
+    if not citations:
+        yield {
+            "type": "init",
+            "citations": [],
+            "provider": "none",
+            "model": "none",
+            "degraded": False,
+        }
+        yield {"type": "token", "token": NO_CONTEXT_ANSWER}
+        yield {
+            "type": "done",
+            "answer": NO_CONTEXT_ANSWER,
+            "citations": [],
+            "provider": "none",
+            "model": "none",
+            "degraded": False,
+        }
+        return
+
+    llm = provider or get_provider()
+    if llm is None:
+        answer = extractive_answer(citations)
+        yield {
+            "type": "init",
+            "citations": citations,
+            "provider": "extractive",
+            "model": "none",
+            "degraded": True,
+        }
+        words = answer.split(" ")
+        for i, word in enumerate(words):
+            token = word if i == 0 else " " + word
+            yield {"type": "token", "token": token}
+        yield {
+            "type": "done",
+            "answer": answer,
+            "citations": citations,
+            "provider": "extractive",
+            "model": "none",
+            "degraded": True,
+        }
+        return
+
+    memory_context = ""
+    if db is not None:
+        try:
+            from .memory import MemoryService
+
+            dossier = MemoryService.get_active_dossier(db, workspace_id)
+            memories = MemoryService.retrieve_memories(db, workspace_id, message, top_k=3)
+            memory_context = MemoryService.format_memory_context(dossier, memories)
+        except Exception:
+            logger.warning("Failed to retrieve memory context", exc_info=True)
+
+    prompt_parts = []
+    if memory_context:
+        prompt_parts.append(f"Workspace Context & Memory:\n{memory_context}")
+    prompt_parts.append(f"Question: {message}\n\nContext:\n{context}")
+    user_prompt = "\n\n".join(prompt_parts)
+
+    yield {
+        "type": "init",
+        "citations": citations,
+        "provider": llm.name,
+        "model": llm.model,
+        "degraded": False,
+    }
+
+    chunks: list[str] = []
+    try:
+        stream_fn = getattr(llm, "stream_complete", None)
+        if callable(stream_fn):
+            for token in stream_fn(SYSTEM_PROMPT, user_prompt):
+                chunks.append(token)
+                yield {"type": "token", "token": token}
+        else:
+            full_text = llm.complete(SYSTEM_PROMPT, user_prompt)
+            chunks.append(full_text)
+            yield {"type": "token", "token": full_text}
+
+        answer = "".join(chunks)
+        yield {
+            "type": "done",
+            "answer": answer,
+            "citations": citations,
+            "provider": llm.name,
+            "model": llm.model,
+            "degraded": False,
+        }
+    except ProviderError:
+        logger.warning(
+            "LLM provider %s streaming failed; serving extractive fallback",
+            llm.name,
+            exc_info=True,
+        )
+        answer = extractive_answer(citations)
+        if not chunks:
+            yield {"type": "token", "token": answer}
+        yield {
+            "type": "done",
+            "answer": answer if not chunks else "".join(chunks),
+            "citations": citations,
+            "provider": "extractive" if not chunks else llm.name,
+            "model": "none" if not chunks else llm.model,
+            "degraded": True,
+        }
