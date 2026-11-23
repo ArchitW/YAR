@@ -29,6 +29,8 @@ class ChatResponse(BaseModel):
     provider: str
     model: str
     degraded: bool = False
+    faithfulness_score: float | None = None
+    hallucination_detected: bool = False
 
 
 @router.post("", response_model=ChatResponse)
@@ -80,7 +82,7 @@ def chat(
         db=db,
         event_type="chat.query",
         summary=f"Processed query in workspace {req.workspace_id}",
-        status="warning" if result.get("degraded") else "success",
+        status="warning" if result.get("degraded") or result.get("hallucination_detected") else "success",
         trace_id=trace_id,
         workspace_id=req.workspace_id,
         metadata={
@@ -88,6 +90,9 @@ def chat(
             "model": result.get("model"),
             "citations_count": len(result.get("citations", [])),
             "degraded": result.get("degraded", False),
+            "faithfulness_score": result.get("faithfulness_score"),
+            "hallucination_detected": result.get("hallucination_detected", False),
+            "unsupported_claims": result.get("unsupported_claims", []),
         },
     )
 
@@ -156,7 +161,7 @@ def chat_stream(
                     db=db,
                     event_type="chat.query",
                     summary=f"Processed streaming query in workspace {req.workspace_id}",
-                    status="warning" if final_result.get("degraded") else "success",
+                    status="warning" if final_result.get("degraded") or final_result.get("hallucination_detected") else "success",
                     trace_id=trace_id,
                     workspace_id=req.workspace_id,
                     metadata={
@@ -164,6 +169,9 @@ def chat_stream(
                         "model": final_result.get("model"),
                         "citations_count": len(final_result.get("citations", [])),
                         "degraded": final_result.get("degraded", False),
+                        "faithfulness_score": final_result.get("faithfulness_score"),
+                        "hallucination_detected": final_result.get("hallucination_detected", False),
+                        "unsupported_claims": final_result.get("unsupported_claims", []),
                         "streaming": True,
                     },
                 )

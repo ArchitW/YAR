@@ -24,6 +24,7 @@ from ..models.document import Document
 from ..services.audit import AuditService
 from ..services.embeddings import embed, embed_late_chunks, embed_sparse
 from ..services.chunking import adaptive_chunk, hierarchical_chunk
+from ..services.guardrails import PIISanitizer
 from ..services.extraction import extract_text, is_supported
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,12 @@ def upload_document(
     except Exception:
         logger.exception("Failed to extract text from %s", file.filename)
         text = ""
+
+    pii_stats = {"total": 0}
     if text:
+        text, pii_stats = PIISanitizer.sanitize(text)
+        if pii_stats["total"] > 0:
+            logger.info("Redacted %d sensitive PII entities from %s before indexing", pii_stats["total"], file.filename)
         status_val = "indexed"
     elif not is_supported(dest, file.content_type):
         status_val = "queued"          # unsupported format, awaiting future parser
@@ -99,7 +105,12 @@ def upload_document(
         status="success" if status_val != "error" else "failure",
         trace_id=trace_id,
         workspace_id=workspace_id,
-        metadata={"filename": file.filename, "size_bytes": size, "status": status_val},
+        metadata={
+            "filename": file.filename,
+            "size_bytes": size,
+            "status": status_val,
+            "redacted_pii_count": pii_stats["total"],
+        },
     )
 
     if text:

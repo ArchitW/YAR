@@ -202,12 +202,32 @@ def answer_query(
             "degraded": True,
         }
 
+    # Guardrails: Faithfulness & Hallucination verification (TKT-022)
+    from .guardrails import FaithfulnessVerifier
+
+    faithfulness = FaithfulnessVerifier.verify(
+        answer=answer,
+        context=context,
+        citations=citations,
+    )
+
+    final_answer = answer
+    if not faithfulness.is_faithful:
+        warning_msg = (
+            "\n\n> ⚠️ **Verification Notice:** One or more assertions in this response could not be "
+            "fully verified against your indexed documents. Please verify directly with cited sources."
+        )
+        final_answer = f"{answer}{warning_msg}"
+
     return {
-        "answer": answer,
+        "answer": final_answer,
         "citations": citations,
         "provider": llm.name,
         "model": llm.model,
         "degraded": False,
+        "faithfulness_score": faithfulness.score,
+        "hallucination_detected": not faithfulness.is_faithful,
+        "unsupported_claims": faithfulness.unsupported_claims,
     }
 
 
@@ -333,6 +353,13 @@ def stream_answer_query(
             yield {"type": "token", "token": full_text}
 
         answer = "".join(chunks)
+        from .guardrails import FaithfulnessVerifier
+
+        faithfulness = FaithfulnessVerifier.verify(
+            answer=answer,
+            context=context,
+            citations=citations,
+        )
         yield {
             "type": "done",
             "answer": answer,
@@ -340,6 +367,9 @@ def stream_answer_query(
             "provider": llm.name,
             "model": llm.model,
             "degraded": False,
+            "faithfulness_score": faithfulness.score,
+            "hallucination_detected": not faithfulness.is_faithful,
+            "unsupported_claims": faithfulness.unsupported_claims,
         }
     except ProviderError:
         logger.warning(
