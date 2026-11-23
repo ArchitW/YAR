@@ -52,3 +52,12 @@ def searxng_settings() -> dict[str, Any]:
         "enabled": os.getenv("WEB_SEARCH_ENABLED", "true").strip().lower() in ("true", "1", "yes"),
         "confidence_threshold": float(os.getenv("WEB_SEARCH_CONFIDENCE_THRESHOLD", "0.25")),
     }
+
+
+def ollama_settings() -> dict[str, Any]:
+    """Settings for native Ollama local model integration and autodiscovery (TKT-023)."""
+    return {
+        "base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/"),
+        "autodiscover": os.getenv("OLLAMA_AUTODISCOVER", "true").strip().lower() in ("true", "1", "yes"),
+        "timeout": float(os.getenv("OLLAMA_TIMEOUT", "3.0")),
+    }

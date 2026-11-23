@@ -125,14 +125,96 @@ class OpenAICompatibleProvider:
             raise ProviderError(f"provider stream request failed: {exc}") from exc
 
 
+class OllamaProvider(OpenAICompatibleProvider):
+    """Native Ollama local model provider with tag autodiscovery (TKT-023)."""
+
+    name = "ollama"
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        model: str = "llama3.2",
+        timeout: float = 60.0,
+    ) -> None:
+        raw_url = base_url.rstrip("/")
+        v1_url = raw_url if raw_url.endswith("/v1") else f"{raw_url}/v1"
+        super().__init__(base_url=v1_url, model=model, api_key=None, timeout=timeout)
+        self.ollama_host = raw_url[:-3] if raw_url.endswith("/v1") else raw_url
+
+    @classmethod
+    def discover_models(
+        cls,
+        base_url: str = "http://localhost:11434",
+        timeout: float = 3.0,
+    ) -> list[str]:
+        """Query local Ollama instance for installed models via /api/tags."""
+        host = base_url.rstrip("/")
+        if host.endswith("/v1"):
+            host = host[:-3]
+
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.get(f"{host}/api/tags")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return [
+                        m.get("name")
+                        for m in data.get("models", [])
+                        if m.get("name")
+                    ]
+        except Exception:
+            return []
+        return []
+
+    @classmethod
+    def is_online(
+        cls,
+        base_url: str = "http://localhost:11434",
+        timeout: float = 2.0,
+    ) -> bool:
+        """Check if local Ollama daemon is currently reachable."""
+        host = base_url.rstrip("/")
+        if host.endswith("/v1"):
+            host = host[:-3]
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.get(f"{host}/api/tags")
+                return resp.status_code == 200
+        except Exception:
+            return False
+
+
 def get_provider() -> LLMProvider | None:
-    """Return the configured provider, or None when none is configured."""
+    """Return the configured provider, or autodiscover local Ollama, or None."""
     settings = llm_settings()
-    if not settings["base_url"] or not settings["model"]:
-        return None
-    return OpenAICompatibleProvider(
-        base_url=settings["base_url"],
-        model=settings["model"],
-        api_key=settings["api_key"] or None,
-        timeout=float(settings["timeout"]),
-    )
+    if settings["base_url"] and settings["model"]:
+        if "11434" in settings["base_url"] or "ollama" in settings.get("model", "").lower():
+            return OllamaProvider(
+                base_url=settings["base_url"],
+                model=settings["model"],
+                timeout=float(settings["timeout"]),
+            )
+        return OpenAICompatibleProvider(
+            base_url=settings["base_url"],
+            model=settings["model"],
+            api_key=settings["api_key"] or None,
+            timeout=float(settings["timeout"]),
+        )
+
+    # Autodiscovery fallback: check if local Ollama is running and has pulled models
+    from ..core.config import ollama_settings
+
+    o_cfg = ollama_settings()
+    if o_cfg.get("autodiscover"):
+        local_models = OllamaProvider.discover_models(
+            base_url=o_cfg["base_url"],
+            timeout=float(o_cfg["timeout"]),
+        )
+        if local_models:
+            return OllamaProvider(
+                base_url=o_cfg["base_url"],
+                model=local_models[0],
+                timeout=float(settings["timeout"]),
+            )
+
+    return None

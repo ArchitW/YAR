@@ -33,6 +33,40 @@ class ChatResponse(BaseModel):
     hallucination_detected: bool = False
 
 
+class ModelsResponse(BaseModel):
+    configured_provider: str | None = None
+    configured_model: str | None = None
+    ollama_online: bool = False
+    local_models: list[str] = Field(default_factory=list)
+
+
+@router.get("/models", response_model=ModelsResponse)
+def list_available_models() -> ModelsResponse:
+    """List configured provider and autodiscovered local Ollama models (TKT-023)."""
+    from ..core.config import llm_settings, ollama_settings
+    from ..services.providers import OllamaProvider, get_provider
+
+    llm_cfg = llm_settings()
+    o_cfg = ollama_settings()
+
+    active_provider = get_provider()
+    local_models = OllamaProvider.discover_models(
+        base_url=o_cfg["base_url"],
+        timeout=float(o_cfg["timeout"]),
+    )
+    is_online = OllamaProvider.is_online(
+        base_url=o_cfg["base_url"],
+        timeout=float(o_cfg["timeout"]),
+    )
+
+    return ModelsResponse(
+        configured_provider=active_provider.name if active_provider else None,
+        configured_model=active_provider.model if active_provider else (llm_cfg.get("model") or None),
+        ollama_online=is_online,
+        local_models=local_models,
+    )
+
+
 @router.post("", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
