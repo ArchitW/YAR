@@ -149,6 +149,8 @@ def retrieve(
             "text": pl.get("text", ""),
             "chunk_index": pl.get("chunk_index"),
             "total_chunks": pl.get("total_chunks"),
+            "parent_id": pl.get("parent_id"),
+            "parent_text": pl.get("parent_text"),
             "page_number": pl.get("page_number"),
             "section": pl.get("section"),
             "timestamp": pl.get("timestamp"),

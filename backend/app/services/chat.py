@@ -29,14 +29,40 @@ NO_CONTEXT_ANSWER = (
 
 
 def build_context(hits: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    """Build numbered context blocks plus the citations that match them."""
+    """Build numbered context blocks plus the citations that match them.
+
+    Parent-Child Hierarchical Retrieval (TKT-019):
+    If hits contain `parent_text` and `parent_id`, we inject the richer parent context
+    into the context blocks provided to the LLM, while deduplicating by parent_id
+    to prevent prompt bloat when multiple child chunks originate from the same section.
+    """
     blocks: list[str] = []
     citations: list[dict[str, Any]] = []
+    seen_parent_ids: set[str] = set()
+
     for hit in hits:
-        text = str(hit.get("text") or hit.get("chunk_text") or "").strip()
-        if not text:
+        parent_id = hit.get("parent_id")
+        parent_text = str(hit.get("parent_text") or "").strip()
+        chunk_text = str(hit.get("text") or hit.get("chunk_text") or "").strip()
+
+        if parent_id and parent_text:
+            if parent_id in seen_parent_ids:
+                continue
+            seen_parent_ids.add(parent_id)
+            context_text = parent_text
+        else:
+            context_text = chunk_text
+
+        if not context_text:
             continue
-        citation = {**hit, "index": len(citations) + 1}
+
+        citation = {
+            **hit,
+            "index": len(citations) + 1,
+            "text": context_text,
+            "chunk_text": chunk_text or context_text,
+            "parent_text": parent_text if parent_text else None,
+        }
         file_name = hit.get("file_name") or "unknown file"
         chunk_index = hit.get("chunk_index")
         loc_details = []
@@ -52,7 +78,7 @@ def build_context(hits: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]
         if hit.get("is_dream"):
             title = hit.get("dream_title") or file_name
             location = f"[Dream Insight: {title}]"
-        blocks.append(f"[{citation['index']}] {location}\n{text}")
+        blocks.append(f"[{citation['index']}] {location}\n{context_text}")
         citations.append(citation)
     return "\n\n".join(blocks), citations
 

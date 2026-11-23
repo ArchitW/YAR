@@ -10,7 +10,7 @@ import csv
 import io
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .cleaning import clean_text
 from .ocr import ocr_image, ocr_image_bytes
@@ -52,18 +52,52 @@ def extract_pdf(path: str) -> str:
     return "\n\n".join(pages)
 
 
+def rows_to_markdown_table(rows: list[Any], data_rows: list[list[str]] | None = None) -> str:
+    """Format rows as a clean GitHub-flavored Markdown table (TKT-019).
+
+    Accepts either:
+    - rows: list of all rows where rows[0] is the header
+    - or rows_to_markdown_table(headers, data_rows)
+    """
+    if data_rows is not None:
+        if not rows and not data_rows:
+            return ""
+        valid_rows = [rows] + list(data_rows)
+    else:
+        if not rows:
+            return ""
+        valid_rows = list(rows)
+
+    valid_rows = [r for r in valid_rows if any(str(cell).strip() for cell in r)]
+    if not valid_rows:
+        return ""
+
+    header = [str(c).replace("\n", " ").strip() for c in valid_rows[0]]
+    if not any(header):
+        header = [f"Col {i+1}" for i in range(len(header))]
+
+    num_cols = len(header)
+    separator = ["---"] * num_cols
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(separator) + " |",
+    ]
+    for row in valid_rows[1:]:
+        padded = [str(cell).replace("\n", " ").strip() for cell in row]
+        if len(padded) < num_cols:
+            padded += [""] * (num_cols - len(padded))
+        lines.append("| " + " | ".join(padded[:num_cols]) + " |")
+
+    return "\n".join(lines)
+
+
 def extract_csv(path: str) -> str:
     with open(path, "r", encoding="utf-8", errors="ignore", newline="") as f:
         reader = csv.reader(f)
         rows = list(reader)
     if not rows:
         return ""
-    # Render as a readable table: header row + data rows
-    header = rows[0]
-    lines = [", ".join(header)]
-    for row in rows[1:]:
-        lines.append(", ".join(row))
-    return "\n".join(lines)
+    return rows_to_markdown_table(rows)
 
 
 def extract_xlsx(path: str) -> str:
@@ -72,13 +106,15 @@ def extract_xlsx(path: str) -> str:
     wb = load_workbook(path, read_only=True, data_only=True)
     sheets: list[str] = []
     for ws in wb.worksheets:
-        rows: list[str] = []
+        rows: list[list[str]] = []
         for row in ws.iter_rows(values_only=True):
             cells = [str(c) if c is not None else "" for c in row]
             if any(cells):
-                rows.append(", ".join(cells))
+                rows.append(cells)
         if rows:
-            sheets.append(f"[Sheet: {ws.title}]\n" + "\n".join(rows))
+            table_md = rows_to_markdown_table(rows)
+            if table_md:
+                sheets.append(f"[Sheet: {ws.title}]\n{table_md}")
     wb.close()
     if not sheets:
         return ""

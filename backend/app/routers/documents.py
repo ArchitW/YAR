@@ -23,7 +23,7 @@ from ..core.middleware import get_request_trace_id
 from ..models.document import Document
 from ..services.audit import AuditService
 from ..services.embeddings import embed, embed_late_chunks, embed_sparse
-from ..services.chunking import adaptive_chunk
+from ..services.chunking import adaptive_chunk, hierarchical_chunk
 from ..services.extraction import extract_text, is_supported
 
 logger = logging.getLogger(__name__)
@@ -104,13 +104,28 @@ def upload_document(
 
     if text:
         ensure_collection()
-        chunks = adaptive_chunk(text)
+        hier_items = hierarchical_chunk(text)
+        if not hier_items:
+            hier_items = [
+                {
+                    "child_text": c,
+                    "child_index": i,
+                    "parent_id": f"p_{i}",
+                    "parent_index": i,
+                    "parent_text": c,
+                    "section": None,
+                }
+                for i, c in enumerate(adaptive_chunk(text))
+            ]
+
+        chunks = [item["child_text"] for item in hier_items]
         ctx_chunks = [f"Document: {file.filename}\n\n{chunk}" for chunk in chunks]
         dense_vecs = embed_late_chunks(text, ctx_chunks, original_chunks=chunks)
         points = []
-        for i, (chunk, ctx_chunk, dvec) in enumerate(zip(chunks, ctx_chunks, dense_vecs)):
-            meta = parse_chunk_metadata(chunk)
+        for i, (item, ctx_chunk, dvec) in enumerate(zip(hier_items, ctx_chunks, dense_vecs)):
+            meta = parse_chunk_metadata(item["child_text"])
             sp = embed_sparse(ctx_chunk)
+            sec = item.get("section") or meta.get("section")
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
                 vector={
@@ -121,12 +136,14 @@ def upload_document(
                     "workspace_id": workspace_id,
                     "document_id": doc.id,
                     "file_name": doc.name,
-                    "chunk_index": i,
-                    "total_chunks": len(chunks),
-                    "text": chunk,
+                    "chunk_index": item["child_index"],
+                    "total_chunks": len(hier_items),
+                    "text": item["child_text"],
                     "context": ctx_chunk,
+                    "parent_id": f"{doc.id}_{item['parent_id']}",
+                    "parent_text": item["parent_text"],
                     "page_number": meta.get("page_number"),
-                    "section": meta.get("section"),
+                    "section": sec,
                     "timestamp": None,
                 },
             ))
