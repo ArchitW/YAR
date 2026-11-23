@@ -34,3 +34,11 @@ def jwt_secret() -> str:
             raise RuntimeError("JWT_SECRET environment variable is required when AUTH_ENABLED=true")
         return "yar-dev-secret-auth-disabled"
     return secret
+
+
+def query_rewriter_settings() -> dict[str, bool]:
+    """Settings for conversational query rewriting and HyDE expansion."""
+    return {
+        "rewrite_enabled": os.getenv("QUERY_REWRITE_ENABLED", "true").strip().lower() in ("true", "1", "yes"),
+        "hyde_enabled": os.getenv("HYDE_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+    }

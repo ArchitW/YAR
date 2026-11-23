@@ -65,6 +65,25 @@ def extractive_answer(citations: list[dict[str, Any]]) -> str:
     )
 
 
+def _get_recent_history(db: Any | None, workspace_id: int, limit: int = 4) -> list[dict[str, str]]:
+    """Retrieve recent conversation turns for context-aware query reformulation."""
+    if db is None:
+        return []
+    try:
+        from ..models.chat import ChatMessage
+
+        rows = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.workspace_id == workspace_id)
+            .order_by(ChatMessage.id.desc())
+            .limit(limit)
+            .all()
+        )
+        return [{"role": r.role, "content": r.content} for r in reversed(rows)]
+    except Exception:
+        return []
+
+
 def answer_query(
     workspace_id: int,
     message: str,
@@ -78,7 +97,22 @@ def answer_query(
     configured or the provider fails, degrades to a grounded extractive answer
     and marks the response as degraded instead of failing the request.
     """
-    hits = retrieve(workspace_id, message, mode)
+    llm = provider or get_provider()
+
+    # Conversational query rewriting & HyDE expansion (TKT-018)
+    from .query import QueryRewriter
+
+    history = _get_recent_history(db, workspace_id)
+    rewritten_query = QueryRewriter.rewrite_conversational_query(history, message, provider=llm)
+    hyde_passage = QueryRewriter.generate_hyde(rewritten_query or message, provider=llm)
+
+    hits = retrieve(
+        workspace_id=workspace_id,
+        query=message,
+        mode=mode,
+        rewritten_query=rewritten_query if rewritten_query != message else None,
+        hyde_passage=hyde_passage,
+    )
     context, citations = build_context(hits)
     if not citations:
         return {
@@ -89,7 +123,6 @@ def answer_query(
             "degraded": False,
         }
 
-    llm = provider or get_provider()
     if llm is None:
         return {
             "answer": extractive_answer(citations),
@@ -155,7 +188,22 @@ def stream_answer_query(
     - {"type": "token", "token": "..."}
     - {"type": "done", "answer": "...", "citations": [...], ...}
     """
-    hits = retrieve(workspace_id, message, mode)
+    llm = provider or get_provider()
+
+    # Conversational query rewriting & HyDE expansion (TKT-018)
+    from .query import QueryRewriter
+
+    history = _get_recent_history(db, workspace_id)
+    rewritten_query = QueryRewriter.rewrite_conversational_query(history, message, provider=llm)
+    hyde_passage = QueryRewriter.generate_hyde(rewritten_query or message, provider=llm)
+
+    hits = retrieve(
+        workspace_id=workspace_id,
+        query=message,
+        mode=mode,
+        rewritten_query=rewritten_query if rewritten_query != message else None,
+        hyde_passage=hyde_passage,
+    )
     context, citations = build_context(hits)
     if not citations:
         yield {
@@ -176,7 +224,6 @@ def stream_answer_query(
         }
         return
 
-    llm = provider or get_provider()
     if llm is None:
         answer = extractive_answer(citations)
         yield {
