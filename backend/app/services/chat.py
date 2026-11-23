@@ -114,6 +114,17 @@ def answer_query(
         hyde_passage=hyde_passage,
     )
     context, citations = build_context(hits)
+
+    # Agentic reasoning: autonomous web metasearch fallback (TKT-020)
+    from .agent.orchestrator import AgenticOrchestrator
+
+    if AgenticOrchestrator.should_search_web(message, hits):
+        search_query = rewritten_query or message
+        web_context, web_citations = AgenticOrchestrator.execute_web_fallback(search_query, citations)
+        if web_context:
+            context = f"{context}\n\n{web_context}" if context else web_context
+            citations = citations + web_citations
+
     if not citations:
         return {
             "answer": NO_CONTEXT_ANSWER,
@@ -205,6 +216,17 @@ def stream_answer_query(
         hyde_passage=hyde_passage,
     )
     context, citations = build_context(hits)
+
+    # Agentic reasoning: autonomous web metasearch fallback (TKT-020)
+    from .agent.orchestrator import AgenticOrchestrator
+
+    if AgenticOrchestrator.should_search_web(message, hits):
+        search_query = rewritten_query or message
+        web_context, web_citations = AgenticOrchestrator.execute_web_fallback(search_query, citations)
+        if web_context:
+            context = f"{context}\n\n{web_context}" if context else web_context
+            citations = citations + web_citations
+
     if not citations:
         yield {
             "type": "init",
