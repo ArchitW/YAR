@@ -5,6 +5,7 @@ import shutil
 import uuid
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -25,7 +26,7 @@ from ..services.audit import AuditService
 from ..services.embeddings import embed, embed_late_chunks, embed_sparse
 from ..services.chunking import adaptive_chunk, hierarchical_chunk
 from ..services.guardrails import PIISanitizer
-from ..services.extraction import extract_text, is_supported
+from ..services.extraction import extract_pdf_boxes, extract_text, find_chunk_bbox, is_supported
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,14 @@ def upload_document(
     except Exception:
         logger.exception("Failed to extract text from %s", file.filename)
         text = ""
+
+    pdf_blocks = []
+    is_pdf = (file.content_type == "application/pdf") or (file.filename and file.filename.lower().endswith(".pdf"))
+    if is_pdf:
+        try:
+            pdf_blocks = extract_pdf_boxes(dest)
+        except Exception:
+            logger.warning("Failed to extract PDF bounding boxes from %s", file.filename, exc_info=True)
 
     pii_stats = {"total": 0}
     if text:
@@ -137,6 +146,8 @@ def upload_document(
             meta = parse_chunk_metadata(item["child_text"])
             sp = embed_sparse(ctx_chunk)
             sec = item.get("section") or meta.get("section")
+            page_num = meta.get("page_number")
+            bbox_info = find_chunk_bbox(item["child_text"], page_num, pdf_blocks) if pdf_blocks else None
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
                 vector={
@@ -153,8 +164,11 @@ def upload_document(
                     "context": ctx_chunk,
                     "parent_id": f"{doc.id}_{item['parent_id']}",
                     "parent_text": item["parent_text"],
-                    "page_number": meta.get("page_number"),
+                    "page_number": page_num,
                     "section": sec,
+                    "bbox": bbox_info.get("bbox") if bbox_info else None,
+                    "page_width": bbox_info.get("page_width") if bbox_info else None,
+                    "page_height": bbox_info.get("page_height") if bbox_info else None,
                     "timestamp": None,
                 },
             ))
@@ -164,6 +178,31 @@ def upload_document(
 @router.get("")
 def list_documents(workspace_id: int, db: Session = Depends(get_db)):
     return db.query(Document).filter(Document.workspace_id == workspace_id).all()
+
+
+@router.get("/{document_id}/file")
+def get_document_file(
+    document_id: int,
+    db: Session = Depends(get_db),
+):
+    """Serve original document file for visual PDF viewing with range request support (TKT-017)."""
+    doc = db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document {document_id} not found",
+        )
+    file_path = os.path.join(UPLOAD_DIR, doc.name)
+    if not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File for document {document_id} not found on disk",
+        )
+    return FileResponse(
+        file_path,
+        media_type=doc.file_type or "application/pdf",
+        filename=doc.name,
+    )
 
 
 @router.delete("/{document_id}")

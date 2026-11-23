@@ -20,6 +20,7 @@ import WorkspaceModal from "./components/WorkspaceModal";
 import DocumentDropzone from "./components/DocumentDropzone";
 import DocumentList from "./components/DocumentList";
 import MemoryInspector from "./components/MemoryInspector";
+import CitationInspector from "./components/CitationInspector";
 
 const API_BASE = "http://localhost:8000";
 
@@ -586,114 +587,12 @@ export default function App() {
         </aside>
       )}
 
-      {/* Citation Inspector Side Panel */}
-      {activeCitation && (
-        <aside className="w-80 sm:w-96 border-l bg-white flex flex-col h-full shadow-lg z-10 transition-all">
-          <div className="h-14 px-4 border-b flex items-center justify-between bg-slate-50">
-            <div className="flex items-center gap-2">
-              <FileText className="w-4 h-4 text-blue-600" />
-              <h3 className="font-semibold text-sm text-slate-800">
-                Citation [{activeCitation.index}]
-              </h3>
-            </div>
-            <button
-              onClick={() => setActiveCitation(null)}
-              aria-label="Close citation details"
-              className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-200/60"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-            {/* Metadata Card */}
-            <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
-              <div>
-                <span className="text-slate-400 uppercase tracking-wider text-[10px] font-semibold block">
-                  Document
-                </span>
-                <span className="font-medium text-slate-800 text-sm break-all">
-                  {activeCitation.file_name || "Unknown"}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-200/60">
-                {activeCitation.page_number != null && (
-                  <div>
-                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">
-                      Page
-                    </span>
-                    <span className="font-mono text-slate-700 font-medium">
-                      {activeCitation.page_number}
-                    </span>
-                  </div>
-                )}
-
-                {activeCitation.section && (
-                  <div>
-                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">
-                      Section
-                    </span>
-                    <span className="text-slate-700 font-medium break-all">
-                      {activeCitation.section}
-                    </span>
-                  </div>
-                )}
-
-                {activeCitation.chunk_index != null && (
-                  <div>
-                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">
-                      Chunk Index
-                    </span>
-                    <span className="font-mono text-slate-700">
-                      {activeCitation.chunk_index}
-                      {activeCitation.total_chunks ? ` / ${activeCitation.total_chunks}` : ""}
-                    </span>
-                  </div>
-                )}
-
-                {activeCitation.score != null && (
-                  <div>
-                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">
-                      Relevance Score
-                    </span>
-                    <span className="font-mono text-slate-700">
-                      {typeof activeCitation.score === "number"
-                        ? activeCitation.score.toFixed(3)
-                        : activeCitation.score}
-                    </span>
-                  </div>
-                )}
-              </div>
-
-              {activeCitation.url && (
-                <div className="pt-2 border-t border-slate-200/60">
-                  <a
-                    href={activeCitation.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-800 font-medium text-xs break-all"
-                  >
-                    <Globe className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Open Web Source</span>
-                    <ExternalLink className="w-3 h-3 text-slate-400" />
-                  </a>
-                </div>
-              )}
-            </div>
-
-            {/* Source Content Preview */}
-            <div>
-              <span className="text-slate-400 uppercase tracking-wider text-[10px] font-semibold block mb-1.5">
-                Supporting Text Excerpt
-              </span>
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 leading-relaxed font-sans whitespace-pre-wrap select-text max-h-[400px] overflow-y-auto">
-                {activeCitation.text || activeCitation.chunk_text || "No preview text available"}
-              </div>
-            </div>
-          </div>
-        </aside>
-      )}
+      {/* Citation Inspector Side Panel (Visual PDF Grounding & Split-Screen Canvas - TKT-017) */}
+      <CitationInspector
+        activeCitation={activeCitation}
+        onClose={() => setActiveCitation(null)}
+        apiBase={API_BASE}
+      />
 
       {/* Workspace Create / Edit Modal */}
       <WorkspaceModal
