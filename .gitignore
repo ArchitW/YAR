@@ -18,6 +18,7 @@ dist-ssr/
 # --- Local runtime data -------------------------------------------------
 backend/yar.db
 backend/yar.db-journal
+backend/qdrant_data/
 backend/uploads/*
 !backend/uploads/.gitkeep
 

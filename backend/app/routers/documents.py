@@ -1,11 +1,12 @@
+import json
 import logging
 import os
 import re
 import shutil
 import uuid
-from typing import Any
+from typing import Any, Iterator
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -174,6 +175,200 @@ def upload_document(
             ))
         qdrant.upsert(COLLECTION, points=points)
     return doc
+
+
+def _sse_event(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+@router.post("/upload/stream")
+def upload_document_stream(
+    workspace_id: int,
+    file: UploadFile = File(...),
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    """Upload and index a document while streaming stage-by-stage SSE progress."""
+    trace_id = get_request_trace_id(request)
+    filename = file.filename or "untitled"
+    content_type = file.content_type
+    dest = os.path.join(UPLOAD_DIR, filename)
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    size = os.path.getsize(dest)
+
+    def generate() -> Iterator[str]:
+        try:
+            yield _sse_event({
+                "stage": "upload",
+                "progress": 15,
+                "detail": f"Received {filename} ({size:,} bytes)",
+            })
+
+            try:
+                text = extract_text(dest, content_type)
+            except Exception:
+                logger.exception("Failed to extract text from %s", filename)
+                text = ""
+
+            pdf_blocks = []
+            is_pdf = (content_type == "application/pdf") or filename.lower().endswith(".pdf")
+            if is_pdf:
+                try:
+                    pdf_blocks = extract_pdf_boxes(dest)
+                except Exception:
+                    logger.warning("Failed to extract PDF bounding boxes from %s", filename, exc_info=True)
+
+            extract_detail = f"Extracted {len(text):,} characters" if text else "No text extracted"
+            if pdf_blocks:
+                pages = len({b.get("page") for b in pdf_blocks if b.get("page")})
+                extract_detail += f" ({pages} PDF page{'s' if pages != 1 else ''})"
+            yield _sse_event({
+                "stage": "extract",
+                "progress": 35,
+                "detail": extract_detail,
+            })
+
+            pii_stats = {"total": 0}
+            if text:
+                text, pii_stats = PIISanitizer.sanitize(text)
+                status_val = "indexed"
+            elif not is_supported(dest, content_type):
+                status_val = "queued"
+            else:
+                status_val = "error"
+
+            yield _sse_event({
+                "stage": "sanitize",
+                "progress": 50,
+                "detail": f"{pii_stats['total']} sensitive PII entities redacted",
+            })
+
+            doc = Document(
+                workspace_id=workspace_id,
+                name=filename,
+                file_type=content_type or "unknown",
+                status=status_val,
+                size_bytes=size,
+                content=text,
+            )
+            db.add(doc)
+            db.commit()
+            db.refresh(doc)
+
+            AuditService.record(
+                db=db,
+                event_type="document.upload",
+                summary=f"Uploaded '{filename}' ({size} bytes, status: {status_val})",
+                status="success" if status_val != "error" else "failure",
+                trace_id=trace_id,
+                workspace_id=workspace_id,
+                metadata={
+                    "filename": filename,
+                    "size_bytes": size,
+                    "status": status_val,
+                    "redacted_pii_count": pii_stats["total"],
+                },
+            )
+
+            total_chunks = 0
+            if text:
+                ensure_collection()
+                hier_items = hierarchical_chunk(text)
+                if not hier_items:
+                    hier_items = [
+                        {
+                            "child_text": c,
+                            "child_index": i,
+                            "parent_id": f"p_{i}",
+                            "parent_index": i,
+                            "parent_text": c,
+                            "section": None,
+                        }
+                        for i, c in enumerate(adaptive_chunk(text))
+                    ]
+
+                total_chunks = len(hier_items)
+                yield _sse_event({
+                    "stage": "chunk",
+                    "progress": 65,
+                    "detail": f"Created {total_chunks} parent-child chunks",
+                })
+
+                yield _sse_event({
+                    "stage": "vectorize",
+                    "progress": 80,
+                    "detail": f"Embedding {total_chunks} chunks & indexing in Qdrant...",
+                })
+
+                chunks = [item["child_text"] for item in hier_items]
+                ctx_chunks = [f"Document: {filename}\n\n{chunk}" for chunk in chunks]
+                dense_vecs = embed_late_chunks(text, ctx_chunks, original_chunks=chunks)
+                points = []
+                for item, ctx_chunk, dvec in zip(hier_items, ctx_chunks, dense_vecs):
+                    meta = parse_chunk_metadata(item["child_text"])
+                    sp = embed_sparse(ctx_chunk)
+                    sec = item.get("section") or meta.get("section")
+                    page_num = meta.get("page_number")
+                    bbox_info = find_chunk_bbox(item["child_text"], page_num, pdf_blocks) if pdf_blocks else None
+                    points.append(PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector={
+                            "dense": dvec,
+                            "sparse": SparseVector(indices=sp["indices"], values=sp["values"]),
+                        },
+                        payload={
+                            "workspace_id": workspace_id,
+                            "document_id": doc.id,
+                            "file_name": doc.name,
+                            "chunk_index": item["child_index"],
+                            "total_chunks": total_chunks,
+                            "text": item["child_text"],
+                            "context": ctx_chunk,
+                            "parent_id": f"{doc.id}_{item['parent_id']}",
+                            "parent_text": item["parent_text"],
+                            "page_number": page_num,
+                            "section": sec,
+                            "bbox": bbox_info.get("bbox") if bbox_info else None,
+                            "page_width": bbox_info.get("page_width") if bbox_info else None,
+                            "page_height": bbox_info.get("page_height") if bbox_info else None,
+                            "timestamp": None,
+                        },
+                    ))
+                qdrant.upsert(COLLECTION, points=points)
+            else:
+                yield _sse_event({
+                    "stage": "chunk",
+                    "progress": 65,
+                    "detail": "Skipped chunking (no text extracted)",
+                })
+                yield _sse_event({
+                    "stage": "vectorize",
+                    "progress": 85,
+                    "detail": "Skipped vectorization",
+                })
+
+            yield _sse_event({
+                "stage": "complete",
+                "progress": 100,
+                "detail": f"Indexed {total_chunks} chunks · {pii_stats['total']} PII redacted" if text else f"Saved with status: {status_val}",
+                "document": {
+                    "id": doc.id,
+                    "workspace_id": doc.workspace_id,
+                    "name": doc.name,
+                    "status": doc.status,
+                    "size_bytes": doc.size_bytes,
+                },
+            })
+        except Exception as ex:
+            logger.exception("Streaming upload failed for %s", filename)
+            yield _sse_event({
+                "stage": "error",
+                "progress": 100,
+                "detail": str(ex),
+            })
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 @router.get("")
 def list_documents(workspace_id: int, db: Session = Depends(get_db)):

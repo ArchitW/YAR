@@ -1,9 +1,13 @@
 import hashlib
+import logging
 import math
 import re
 from typing import Any, Dict, List
 from sentence_transformers import SentenceTransformer
 
+from ..core.config import detect_torch_device
+
+logger = logging.getLogger(__name__)
 _model = None
 
 # Standard lightweight English stopwords to prevent high-frequency words dominating sparse search
@@ -23,7 +27,9 @@ STOPWORDS = {
 def get_model():
     global _model
     if _model is None:
-        _model = SentenceTransformer("BAAI/bge-m3")
+        device = detect_torch_device()
+        logger.info("Loading embedding model BAAI/bge-m3 on device=%s", device)
+        _model = SentenceTransformer("BAAI/bge-m3", device=device)
     return _model
 
 def embed(texts: List[str]) -> List[List[float]]:

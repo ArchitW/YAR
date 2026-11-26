@@ -11,7 +11,9 @@ import {
   Globe,
   Layers,
   Send,
+  Settings,
   Sparkles,
+  Terminal,
   X,
 } from "lucide-react";
 import { Citation, DocumentItem, Message, Workspace } from "./types";
@@ -21,6 +23,9 @@ import DocumentDropzone from "./components/DocumentDropzone";
 import DocumentList from "./components/DocumentList";
 import MemoryInspector from "./components/MemoryInspector";
 import CitationInspector from "./components/CitationInspector";
+import { ModelsStatus } from "./components/ModelSettingsPanel";
+import SettingsModal, { SettingsTab } from "./components/SettingsModal";
+import TerminalLogsDrawer from "./components/TerminalLogsDrawer";
 
 const API_BASE = "http://localhost:8000";
 
@@ -46,10 +51,30 @@ export default function App() {
   // Cognitive Memory & Dossier Drawer state
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
 
-  // 1. Fetch or initialize workspaces on mount
+  // Unified Full Settings Modal state
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  const [modelsStatus, setModelsStatus] = useState<ModelsStatus | null>(null);
+
+  // Backend Terminal Logs Drawer state
+  const [isLogsOpen, setIsLogsOpen] = useState(false);
+
+  const fetchModelsStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/chat/models`);
+      if (res.ok) {
+        const data: ModelsStatus = await res.json();
+        setModelsStatus(data);
+      }
+    } catch {
+      // Backend starting or offline
+    }
+  }, []);
+
+  // 1. Fetch or initialize workspaces & model status on mount
   useEffect(() => {
     fetchWorkspaces();
-  }, []);
+    fetchModelsStatus();
+  }, [fetchModelsStatus]);
 
   const fetchWorkspaces = async () => {
     try {
@@ -339,6 +364,35 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* LLM Endpoint Status Pill (opens Settings -> Models) */}
+            <button
+              onClick={() => {
+                setSettingsTab("models");
+                fetchModelsStatus();
+              }}
+              className="px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              aria-label="Configure LLM endpoint"
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  modelsStatus?.configured_provider ? "bg-emerald-500" : "bg-amber-500"
+                }`}
+              />
+              <span className="max-w-[130px] truncate">
+                {modelsStatus?.configured_model || "Add LLM Endpoint"}
+              </span>
+            </button>
+
+            {/* Full Settings Button */}
+            <button
+              onClick={() => setSettingsTab("models")}
+              title="Settings"
+              aria-label="Open settings"
+              className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors"
+            >
+              <Settings className="w-3.5 h-3.5" />
+            </button>
+
             {/* Cognitive Memory & Living Dossier Drawer Toggle */}
             <button
               onClick={() => {
@@ -398,6 +452,28 @@ export default function App() {
                 <option value="keyword">Keyword</option>
               </select>
             </div>
+
+            {/* Backend Terminal Logs Toggle */}
+            <button
+              onClick={() => {
+                const next = !isLogsOpen;
+                setIsLogsOpen(next);
+                if (next) {
+                  setIsDocumentsOpen(false);
+                  setIsMemoryOpen(false);
+                  setActiveCitation(null);
+                }
+              }}
+              className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                isLogsOpen
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              }`}
+              aria-label="Toggle backend terminal logs"
+            >
+              <Terminal className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Logs</span>
+            </button>
 
             {/* Citation Visibility Toggle */}
             <button
@@ -586,6 +662,24 @@ export default function App() {
           </div>
         </aside>
       )}
+
+      {/* Unified Full Settings Modal */}
+      <SettingsModal
+        isOpen={settingsTab !== null}
+        initialTab={settingsTab || "models"}
+        onClose={() => setSettingsTab(null)}
+        apiBase={API_BASE}
+        workspaceId={activeWorkspace?.id ?? null}
+        modelsStatus={modelsStatus}
+        onModelsUpdated={(updated) => setModelsStatus(updated)}
+      />
+
+      {/* Backend Terminal Logs Side Panel */}
+      <TerminalLogsDrawer
+        isOpen={isLogsOpen}
+        onClose={() => setIsLogsOpen(false)}
+        apiBase={API_BASE}
+      />
 
       {/* Citation Inspector Side Panel (Visual PDF Grounding & Split-Screen Canvas - TKT-017) */}
       <CitationInspector

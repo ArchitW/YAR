@@ -1,15 +1,19 @@
 """Health and readiness probe router for Docker/Kubernetes container orchestration (TKT-006)."""
 
+import asyncio
+import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, AsyncIterator
 import redis
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 
 from ..core.config import QDRANT_PATH, QDRANT_URL, REDIS_URL, get_qdrant_client
 from ..core.database import get_db
+from ..core.log_stream import log_stream_handler
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -73,3 +77,33 @@ def health_check(response: Response, db: Session = Depends(get_db)) -> dict[str,
 def liveness_probe() -> dict[str, str]:
     """Basic liveness probe checking if the HTTP server is responsive."""
     return {"status": "ok"}
+
+
+@router.get("/logs")
+def get_recent_logs(limit: int = 200) -> list[dict[str, Any]]:
+    """Return recent buffered backend log entries."""
+    return log_stream_handler.recent(limit=min(max(limit, 1), 400))
+
+
+@router.get("/logs/stream")
+async def stream_logs(request: Request) -> StreamingResponse:
+    """Stream live backend logs over Server-Sent Events."""
+    loop = asyncio.get_running_loop()
+    queue = log_stream_handler.subscribe(loop)
+
+    async def event_generator() -> AsyncIterator[str]:
+        try:
+            for entry in log_stream_handler.recent(limit=150):
+                yield f"data: {json.dumps(entry)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    entry = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"data: {json.dumps(entry)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            log_stream_handler.unsubscribe(loop, queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

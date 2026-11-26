@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -14,6 +15,7 @@ from ..services.chat import answer_query, stream_answer_query
 from ..services.export import ExportService
 from ..services.memory import MemoryService
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
@@ -36,8 +38,32 @@ class ChatResponse(BaseModel):
 class ModelsResponse(BaseModel):
     configured_provider: str | None = None
     configured_model: str | None = None
+    base_url: str | None = None
+    timeout: str = "60"
+    has_api_key: bool = False
     ollama_online: bool = False
     local_models: list[str] = Field(default_factory=list)
+
+
+class ModelConfigRequest(BaseModel):
+    base_url: str = ""
+    model: str = ""
+    api_key: str | None = None
+    timeout: str = "60"
+
+
+class ModelTestRequest(BaseModel):
+    base_url: str
+    model: str = ""
+    api_key: str = ""
+    timeout: float = 5.0
+
+
+class ModelTestResponse(BaseModel):
+    ok: bool
+    latency_ms: int
+    models: list[str] = Field(default_factory=list)
+    detail: str
 
 
 @router.get("/models", response_model=ModelsResponse)
@@ -62,9 +88,132 @@ def list_available_models() -> ModelsResponse:
     return ModelsResponse(
         configured_provider=active_provider.name if active_provider else None,
         configured_model=active_provider.model if active_provider else (llm_cfg.get("model") or None),
+        base_url=llm_cfg.get("base_url") or None,
+        timeout=llm_cfg.get("timeout") or "60",
+        has_api_key=bool(llm_cfg.get("api_key")),
         ollama_online=is_online,
         local_models=local_models,
     )
+
+
+@router.post("/models/config", response_model=ModelsResponse)
+def update_model_config(req: ModelConfigRequest) -> ModelsResponse:
+    """Update LLM endpoint configuration at runtime and persist to .env."""
+    from ..core.config import llm_settings, update_env_settings
+
+    base_url = req.base_url.strip().rstrip("/")
+    if base_url and not (base_url.startswith("http://") or base_url.startswith("https://")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Endpoint Base URL must start with http:// or https://",
+        )
+
+    updates: dict[str, str] = {
+        "LLM_BASE_URL": base_url,
+        "LLM_MODEL": req.model.strip(),
+        "LLM_TIMEOUT": str(req.timeout or "60").strip(),
+    }
+    if req.api_key is not None:
+        updates["LLM_API_KEY"] = req.api_key.strip()
+    elif "LLM_API_KEY" not in updates:
+        updates["LLM_API_KEY"] = llm_settings().get("api_key", "")
+
+    update_env_settings(updates)
+    return list_available_models()
+
+
+@router.post("/models/test", response_model=ModelTestResponse)
+def test_model_connection(req: ModelTestRequest) -> ModelTestResponse:
+    """Test connectivity to an OpenAI-compatible LLM endpoint."""
+    import time
+    import httpx
+    from ..core.config import llm_settings
+
+    base_url = req.base_url.strip().rstrip("/")
+    if not (base_url.startswith("http://") or base_url.startswith("https://")):
+        return ModelTestResponse(
+            ok=False,
+            latency_ms=0,
+            detail="Endpoint Base URL must start with http:// or https://",
+        )
+
+    api_key = req.api_key.strip() or llm_settings().get("api_key", "")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    t0 = time.monotonic()
+    models_url = f"{base_url}/models"
+    logger.info("Testing LLM connection: GET %s (model=%s)", models_url, req.model.strip() or "<unset>")
+    try:
+        with httpx.Client(timeout=min(max(req.timeout, 1.0), 15.0)) as client:
+            resp = client.get(models_url, headers=headers)
+            latency_ms = int((time.monotonic() - t0) * 1000)
+
+            if resp.status_code < 400:
+                data = resp.json()
+                models = [
+                    m.get("id", "")
+                    for m in (data.get("data") or [])
+                    if isinstance(m, dict) and m.get("id")
+                ]
+                logger.info("LLM connection test succeeded: GET %s (%d ms, %d models)", models_url, latency_ms, len(models))
+                if req.model.strip() and models and req.model.strip() not in models:
+                    return ModelTestResponse(
+                        ok=True,
+                        latency_ms=latency_ms,
+                        models=models,
+                        detail=f"Connected ({latency_ms} ms). Note: '{req.model.strip()}' not in listed models ({len(models)} found).",
+                    )
+                return ModelTestResponse(
+                    ok=True,
+                    latency_ms=latency_ms,
+                    models=models,
+                    detail=f"Connected ({latency_ms} ms) · {len(models)} model(s) available",
+                )
+
+            # Unified routers may not expose /models (404/405/501) or may require /chat/completions
+            logger.warning("GET %s returned HTTP %s; probing /chat/completions", models_url, resp.status_code)
+            if req.model.strip():
+                chat_url = f"{base_url}/chat/completions"
+                t1 = time.monotonic()
+                chat_resp = client.post(
+                    chat_url,
+                    headers=headers,
+                    json={
+                        "model": req.model.strip(),
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                    },
+                )
+                latency_ms = int((time.monotonic() - t1) * 1000)
+                if chat_resp.status_code < 400:
+                    logger.info("LLM chat probe succeeded: POST %s (%d ms)", chat_url, latency_ms)
+                    return ModelTestResponse(
+                        ok=True,
+                        latency_ms=latency_ms,
+                        detail=f"Connected via /chat/completions ({latency_ms} ms) · model '{req.model.strip()}' ready",
+                    )
+                logger.warning("POST %s returned HTTP %s: %s", chat_url, chat_resp.status_code, chat_resp.text[:200])
+                return ModelTestResponse(
+                    ok=False,
+                    latency_ms=latency_ms,
+                    detail=f"Endpoint reachable, but returned HTTP {chat_resp.status_code}"
+                    + (" (check your API key)" if chat_resp.status_code in (401, 403) else ""),
+                )
+
+            return ModelTestResponse(
+                ok=False,
+                latency_ms=latency_ms,
+                detail=f"Endpoint reachable, but GET /models returned HTTP {resp.status_code}. "
+                + ("Enter a Model Name (and API key if required) to test /chat/completions."
+                   if resp.status_code in (401, 403, 404, 405) else ""),
+            )
+    except Exception as ex:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        logger.exception("LLM connection test error for %s: %s", models_url, ex)
+        return ModelTestResponse(
+            ok=False,
+            latency_ms=latency_ms,
+            detail=f"Connection failed: {ex}",
+        )
 
 
 @router.post("", response_model=ChatResponse)

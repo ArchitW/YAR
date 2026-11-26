@@ -2,6 +2,8 @@ import logging
 from typing import Any, Dict, List
 from sentence_transformers import CrossEncoder
 
+from ..core.config import detect_torch_device
+
 logger = logging.getLogger(__name__)
 _reranker = None
 
@@ -9,7 +11,9 @@ _reranker = None
 def get_reranker() -> CrossEncoder:
     global _reranker
     if _reranker is None:
-        _reranker = CrossEncoder("BAAI/bge-reranker-base")
+        device = detect_torch_device()
+        logger.info("Loading reranker BAAI/bge-reranker-base on device=%s", device)
+        _reranker = CrossEncoder("BAAI/bge-reranker-base", device=device)
     return _reranker
 
 

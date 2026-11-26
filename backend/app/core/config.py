@@ -29,6 +29,20 @@ def get_qdrant_client() -> Any:
     return _qdrant_client
 
 
+def detect_torch_device() -> str:
+    """Return the best available PyTorch compute device ('cuda', 'mps', or 'cpu')."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
 def llm_settings() -> dict[str, str]:
     """LLM gateway settings, read at call time so .env and tests take effect."""
     return {
@@ -37,6 +51,35 @@ def llm_settings() -> dict[str, str]:
         "api_key": os.getenv("LLM_API_KEY", "").strip(),
         "timeout": os.getenv("LLM_TIMEOUT", "60").strip(),
     }
+
+
+def update_env_settings(updates: dict[str, str]) -> None:
+    """Update runtime environment variables and persist them to backend/.env."""
+    for key, val in updates.items():
+        os.environ[key] = val
+
+    env_path = os.path.join(BASE_DIR, ".env")
+    lines: list[str] = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+
+    remaining = dict(updates)
+    new_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k = stripped.split("=", 1)[0].strip()
+            if k in remaining:
+                new_lines.append(f"{k}={remaining.pop(k)}")
+                continue
+        new_lines.append(line)
+
+    for k, v in remaining.items():
+        new_lines.append(f"{k}={v}")
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(new_lines) + "\n")
 
 
 def auth_enabled() -> bool:
