@@ -4,10 +4,11 @@ from typing import Any, Dict, List
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, SparseVector
 
+from ..core.config import get_qdrant_client
 from ..services.embeddings import embed, embed_sparse
 from ..services.reranker import rerank
 
-qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
+qdrant = get_qdrant_client()
 COLLECTION = "yar_chunks"
 
 

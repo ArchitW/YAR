@@ -19,7 +19,7 @@ from qdrant_client.models import (
     MatchValue,
 )
 from ..core.database import get_db
-from ..core.config import UPLOAD_DIR
+from ..core.config import UPLOAD_DIR, get_qdrant_client
 from ..core.middleware import get_request_trace_id
 from ..models.document import Document
 from ..services.audit import AuditService
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
+qdrant = get_qdrant_client()
 COLLECTION = "yar_chunks"
 
 def ensure_collection(client: Any | None = None):

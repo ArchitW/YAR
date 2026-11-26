@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build: ./backend
@@ -11,6 +9,8 @@ services:
       QDRANT_URL: http://qdrant:6333
       SEARXNG_BASE_URL: http://searxng:8080
       WEB_SEARCH_ENABLED: "true"
+    volumes:
+      - uploads_data:/app/uploads
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')\""]
       interval: 10s
@@ -34,6 +34,8 @@ services:
       QDRANT_URL: http://qdrant:6333
       SEARXNG_BASE_URL: http://searxng:8080
       WEB_SEARCH_ENABLED: "true"
+    volumes:
+      - uploads_data:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -100,3 +102,4 @@ services:
 volumes:
   pgdata:
   qdrant_data:
+  uploads_data:

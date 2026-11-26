@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 
-from ..core.config import QDRANT_URL, REDIS_URL
+from ..core.config import QDRANT_PATH, QDRANT_URL, REDIS_URL, get_qdrant_client
 from ..core.database import get_db
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -34,7 +34,7 @@ def check_redis() -> tuple[str, str | None]:
 
 def check_qdrant() -> tuple[str, str | None]:
     try:
-        client = QdrantClient(url=QDRANT_URL, timeout=2.0)
+        client = get_qdrant_client() if QDRANT_PATH else QdrantClient(url=QDRANT_URL, timeout=2.0)
         client.get_collections()
         return "ok", None
     except Exception as ex:

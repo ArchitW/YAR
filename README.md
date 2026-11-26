@@ -77,24 +77,77 @@ YAR is a **self-hosted, privacy-first knowledge intelligence platform**. Upload 
 
 ## Quick Start
 
-Everything in Docker:
+You can run YAR in **two ways**: with **Docker** (full stack including PostgreSQL, Redis, Celery worker, and optional SearXNG) or **directly on your machine without Docker** (using SQLite and embedded local-disk Qdrant).
 
-```bash
-docker compose up --build
-```
+### Option 1: Everything in Docker
+
+Requires Docker and Docker Compose.
+
+1. *(Optional)* Create a `.env` file if you want to customize LLM or auth settings:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Build and start the stack (`backend`, `worker`, `frontend`, `postgres`, `redis`, `qdrant`):
+
+   ```bash
+   docker compose up --build
+   ```
+
+   To run in the background (detached):
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+   To also include **SearXNG** (for web search), enable the `full` profile:
+
+   ```bash
+   docker compose --profile full up --build
+   ```
+
+3. Check running services and logs:
+
+   ```bash
+   docker compose ps
+   docker compose logs -f
+   ```
+
+4. Stop the stack:
+
+   ```bash
+   docker compose down
+   ```
+
+   > **Data persistence:** `postgres` (`pgdata`), `qdrant` (`qdrant_data`), and uploaded files (`uploads_data`) all use named Docker volumes, so your database, vector index, and uploaded documents survive `docker compose down` and container rebuilds. Use `docker compose down -v` only if you want to wipe all stored data.
+
+### Option 2: Direct Install Without Docker
+
+Requires Python 3.11+ and Node.js 18+.
+
+1. Install dependencies, create `backend/.venv`, and generate `backend/.env` with local persistence defaults:
+
+   ```bash
+   ./install.sh
+   ```
+
+2. Start both the Backend API and Frontend UI:
+
+   ```bash
+   ./start.sh
+   ```
+
+   > **Data persistence:** All data is stored locally on disk — SQLite database at `backend/yar.db`, Qdrant vectors at `backend/qdrant_data/`, and uploaded files at `backend/uploads/`. Optional background Celery workers and SearXNG web search require Redis/SearXNG (or Option 1).
+
+### Access Links
 
 - **Web UI:** <http://localhost:5173>
-- **API docs:** <http://localhost:8000/docs>
-
-Or run services locally (with Docker handling Postgres, Redis, and Qdrant):
-
-```bash
-docker compose up postgres redis qdrant searxng
-./install.sh
-./run.sh
-```
-
-Requires Python 3.11+, Node 18+, Docker.
+- **API Docs (Swagger UI):** <http://localhost:8000/docs>
+- **API Docs (ReDoc):** <http://localhost:8000/redoc>
+- **Backend Health:** <http://localhost:8000/health/live>
+- **Qdrant Dashboard** *(Docker / server mode)*: <http://localhost:6333/dashboard>
+- **SearXNG** *(Docker `--profile full` only)*: <http://localhost:8080>
 
 ---
 

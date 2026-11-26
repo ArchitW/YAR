@@ -12,6 +12,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct, SparseVector
 from sqlalchemy.orm import Session
 
+from ...core.config import get_qdrant_client
 from ...models.document import Document
 from ...models.memory import MemoryEdge, MemoryNode
 from ...services.chunking import adaptive_chunk
@@ -21,7 +22,7 @@ from ..providers import LLMProvider, get_provider
 
 logger = logging.getLogger(__name__)
 
-qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
+qdrant = get_qdrant_client()
 COLLECTION = "yar_chunks"
 
 DREAM_SYSTEM_PROMPT = (

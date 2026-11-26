@@ -10,6 +10,23 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/yar.db")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", f"{BASE_DIR}/uploads")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_PATH = os.getenv("QDRANT_PATH", "").strip()
+
+_qdrant_client: Any = None
+
+
+def get_qdrant_client() -> Any:
+    """Return a shared QdrantClient (local disk path when QDRANT_PATH is set, else HTTP URL)."""
+    global _qdrant_client
+    if _qdrant_client is None:
+        from qdrant_client import QdrantClient
+
+        if QDRANT_PATH:
+            os.makedirs(QDRANT_PATH, exist_ok=True)
+            _qdrant_client = QdrantClient(path=QDRANT_PATH)
+        else:
+            _qdrant_client = QdrantClient(url=QDRANT_URL)
+    return _qdrant_client
 
 
 def llm_settings() -> dict[str, str]:
