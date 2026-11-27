@@ -64,6 +64,8 @@ class AgenticOrchestrator:
         num_results: int = 4,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Query SearXNG / DuckDuckGo and format web citations."""
+        if not searxng_settings().get("enabled", True):
+            return "", []
         tool = search_tool or SearXNGSearchTool()
         results = tool.search(query, num_results=num_results)
         if not results:

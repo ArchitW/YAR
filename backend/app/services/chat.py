@@ -336,9 +336,57 @@ def stream_answer_query(
     """
     llm = provider or get_provider()
 
-    context, citations = _gather_context(
-        workspace_id, message, mode, llm, db, use_local_knowledge
-    )
+    context = ""
+    citations: list[dict[str, Any]] = []
+
+    if use_local_knowledge:
+        from .router import route_query
+
+        route = route_query(message).get("route")
+
+        if route == "general_chat":
+            yield {"type": "status", "stage": "route", "detail": "Answering from general knowledge"}
+        elif route == "web_search":
+            from .agent.orchestrator import AgenticOrchestrator
+
+            yield {"type": "status", "stage": "web", "detail": "Searching the web…"}
+            web_context, citations = AgenticOrchestrator.execute_web_fallback(message, [])
+            context = web_context or ""
+        else:
+            from .query import QueryRewriter
+
+            history = _get_recent_history(db, workspace_id)
+            yield {"type": "status", "stage": "rewrite", "detail": "Rewriting your question…"}
+            rewritten_query = QueryRewriter.rewrite_conversational_query(history, message, provider=llm)
+            if rewritten_query and rewritten_query.strip() and rewritten_query.strip() != message.strip():
+                yield {"type": "status", "stage": "rewrite", "detail": f"Rewrote: “{rewritten_query.strip()}”"}
+
+            hyde_passage = None
+            if llm is not None:
+                yield {"type": "status", "stage": "hyde", "detail": "Building a search passage…"}
+                hyde_passage = QueryRewriter.generate_hyde(rewritten_query or message, provider=llm)
+                if hyde_passage:
+                    yield {"type": "status", "stage": "hyde", "detail": "Search passage ready"}
+
+            yield {"type": "status", "stage": "retrieve", "detail": "Searching your documents…"}
+            hits = retrieve(
+                workspace_id=workspace_id,
+                query=message,
+                mode=mode,
+                rewritten_query=rewritten_query if rewritten_query != message else None,
+                hyde_passage=hyde_passage,
+            )
+            context, citations = build_context(hits)
+
+            from .agent.orchestrator import AgenticOrchestrator
+
+            if AgenticOrchestrator.should_search_web(message, hits):
+                yield {"type": "status", "stage": "web", "detail": "Searching the web…"}
+                search_query = rewritten_query or message
+                web_context, web_citations = AgenticOrchestrator.execute_web_fallback(search_query, citations)
+                if web_context:
+                    context = f"{context}\n\n{web_context}" if context else web_context
+                    citations = citations + web_citations
 
     if not citations:
         # No grounding → conversational answer, or a clear error if no model is
@@ -364,7 +412,7 @@ def stream_answer_query(
         answer = extractive_answer(citations)
         yield {
             "type": "init",
-            "citations": citations,
+            "citations": [],
             "provider": "extractive",
             "model": "none",
             "degraded": True,
@@ -400,7 +448,7 @@ def stream_answer_query(
 
     yield {
         "type": "init",
-        "citations": citations,
+        "citations": [],
         "provider": llm.name,
         "model": llm.model,
         "degraded": False,

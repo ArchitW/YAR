@@ -128,9 +128,9 @@ class TestStreamAnswerQueryService:
         with patch("app.services.chat.get_provider", return_value=None):
             events = list(stream_answer_query(workspace_id=1, message="Anything?"))
 
-        assert events[0]["type"] == "init"
-        assert events[0]["citations"] == []
-        assert events[0]["provider"] == "none"
+        init = next(e for e in events if e["type"] == "init")
+        assert init["citations"] == []
+        assert init["provider"] == "none"
 
         tokens = "".join(e["token"] for e in events if e["type"] == "token")
         done = events[-1]
@@ -147,18 +147,22 @@ class TestStreamAnswerQueryService:
 
         events = list(stream_answer_query(workspace_id=1, message="What is YAR?", provider=provider))
 
-        types = [e["type"] for e in events]
+        core = [e for e in events if e["type"] != "status"]
+        types = [e["type"] for e in core]
         assert types == ["init", "token", "token", "token", "token", "done"]
 
-        assert events[0]["type"] == "init"
-        assert len(events[0]["citations"]) == 1
-        assert events[0]["citations"][0]["file_name"] == "about.txt"
+        # Citations are deferred to the done event (sources render after the answer).
+        init = core[0]
+        assert init["type"] == "init"
+        assert init["citations"] == []
 
-        tokens = [e["token"] for e in events if e["type"] == "token"]
+        tokens = [e["token"] for e in core if e["type"] == "token"]
         assert "".join(tokens) == "YAR is great [1]."
 
-        done_event = events[-1]
+        done_event = core[-1]
         assert done_event["answer"] == "YAR is great [1]."
+        assert len(done_event["citations"]) == 1
+        assert done_event["citations"][0]["file_name"] == "about.txt"
         assert done_event["degraded"] is False
         assert done_event["provider"] == "fake-streamer"
 
@@ -171,9 +175,9 @@ class TestStreamAnswerQueryService:
         with patch("app.services.chat.get_provider", return_value=None):
             events = list(stream_answer_query(workspace_id=1, message="What is this?"))
 
-        assert events[0]["type"] == "init"
-        assert events[0]["degraded"] is True
-        assert events[0]["provider"] == "extractive"
+        init = next(e for e in events if e["type"] == "init")
+        assert init["degraded"] is True
+        assert init["provider"] == "extractive"
 
         done = events[-1]
         assert done["type"] == "done"
@@ -189,7 +193,8 @@ class TestStreamAnswerQueryService:
 
         events = list(stream_answer_query(workspace_id=1, message="Hello?", provider=failing_provider))
 
-        assert events[0]["type"] == "init"
+        init = next(e for e in events if e["type"] == "init")
+        assert init["type"] == "init"
         done = events[-1]
         assert done["type"] == "done"
         assert done["degraded"] is True

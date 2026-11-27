@@ -107,7 +107,8 @@ class TestAgenticOrchestrator:
         assert AgenticOrchestrator.is_explicit_web_query("current weather in Tokyo") is True
         assert AgenticOrchestrator.is_explicit_web_query("What is late chunking?") is False
 
-    def test_should_search_web_decision(self):
+    @patch("app.services.agent.orchestrator.searxng_settings", return_value={"enabled": True, "confidence_threshold": 0.25})
+    def test_should_search_web_decision(self, _mock_settings):
         # 1. Explicit query triggers search regardless of document hits
         assert AgenticOrchestrator.should_search_web("search online for X", hits=[{"score": 0.9}]) is True
 
@@ -124,7 +125,8 @@ class TestAgenticOrchestrator:
         with patch("app.services.agent.orchestrator.searxng_settings", return_value={"enabled": False}):
             assert AgenticOrchestrator.should_search_web("search the web for X", hits=[]) is False
 
-    def test_execute_web_fallback_formats_citations(self):
+    @patch("app.services.agent.orchestrator.searxng_settings", return_value={"enabled": True, "confidence_threshold": 0.25})
+    def test_execute_web_fallback_formats_citations(self, _mock_settings):
         mock_tool = MagicMock()
         mock_tool.search.return_value = [
             {"title": "Docs", "url": "https://example.com/docs", "snippet": "Useful doc", "source": "searxng"}
@@ -151,7 +153,8 @@ class TestAgenticOrchestrator:
 class TestChatAgenticWebIntegration:
     @patch("app.services.chat.retrieve", return_value=[])
     @patch.object(AgenticOrchestrator, "execute_web_fallback")
-    def test_answer_query_uses_web_fallback_when_no_docs(self, mock_fallback, mock_ret):
+    @patch("app.services.agent.orchestrator.searxng_settings", return_value={"enabled": True, "confidence_threshold": 0.25})
+    def test_answer_query_uses_web_fallback_when_no_docs(self, mock_settings, mock_fallback, mock_ret):
         mock_fallback.return_value = (
             "[1] [Web Source: PyTorch] (https://pytorch.org)\nPyTorch 2.5 released.",
             [{"index": 1, "is_web": True, "file_name": "PyTorch", "url": "https://pytorch.org", "text": "Released."}],
@@ -167,7 +170,8 @@ class TestChatAgenticWebIntegration:
 
     @patch("app.services.chat.retrieve", return_value=[])
     @patch.object(AgenticOrchestrator, "execute_web_fallback")
-    def test_stream_answer_query_emits_web_citations(self, mock_fallback, mock_ret):
+    @patch("app.services.agent.orchestrator.searxng_settings", return_value={"enabled": True, "confidence_threshold": 0.25})
+    def test_stream_answer_query_emits_web_citations(self, mock_settings, mock_fallback, mock_ret):
         mock_fallback.return_value = (
             "[1] [Web Source: LangChain] (https://langchain.com)\nLangChain framework.",
             [{"index": 1, "is_web": True, "file_name": "LangChain", "url": "https://langchain.com", "text": "LangChain."}],
@@ -176,7 +180,9 @@ class TestChatAgenticWebIntegration:
 
         events = list(stream_answer_query(workspace_id=1, message="What is LangChain?", provider=provider))
 
-        assert events[0]["type"] == "init"
-        assert len(events[0]["citations"]) == 1
-        assert events[0]["citations"][0]["is_web"] is True
-        assert events[-1]["answer"] == "LangChain info [1]."
+        init = next(e for e in events if e["type"] == "init")
+        assert init["type"] == "init"
+        done = events[-1]
+        assert len(done["citations"]) == 1
+        assert done["citations"][0]["is_web"] is True
+        assert done["answer"] == "LangChain info [1]."

@@ -36,6 +36,43 @@ import TerminalLogsDrawer from "./components/TerminalLogsDrawer";
 
 const API_BASE = "http://localhost:8000";
 
+function AnswerBody({
+  text,
+  citations,
+  onSelect,
+}: {
+  text: string;
+  citations?: Citation[];
+  onSelect: (c: Citation) => void;
+}) {
+  if (!citations || citations.length === 0) return <>{text}</>;
+  const parts = text.split(/(\[\d+\])/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        const m = part.match(/^\[(\d+)\]$/);
+        if (m) {
+          const c = citations.find((x) => x.index === Number(m[1]));
+          if (c) {
+            return (
+              <button
+                key={i}
+                type="button"
+                onClick={() => onSelect(c)}
+                className="inline align-baseline text-blue-600 hover:text-blue-700 hover:underline font-medium"
+                title={c.file_name || c.title || "Source"}
+              >
+                {part}
+              </button>
+            );
+          }
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </>
+  );
+}
+
 export default function App() {
   // Workspace state
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -50,6 +87,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState("");
   const [mode, setMode] = useState<"auto" | "hybrid" | "semantic" | "keyword">("auto");
   const [showCitations, setShowCitations] = useState(true);
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
@@ -341,6 +379,23 @@ export default function App() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let pending = "";
+      let rafId: number | null = null;
+
+      const flush = () => {
+        rafId = null;
+        if (!pending) return;
+        const chunk = pending;
+        pending = "";
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant") {
+            next[next.length - 1] = { ...last, text: last.text + chunk };
+          }
+          return next;
+        });
+      };
 
       while (true) {
         const { value, done } = await reader.read();
@@ -352,56 +407,65 @@ export default function App() {
 
         for (const part of parts) {
           const trimmed = part.trim();
-          if (trimmed.startsWith("data: ")) {
-            try {
-              const event = JSON.parse(trimmed.slice(6));
-              if (event.type === "init") {
+          if (!trimmed.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(trimmed.slice(6));
+            if (event.type === "status") {
+              setStatusText(event.detail || "");
+            } else if (event.type === "init") {
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last && last.role === "assistant") {
+                  next[next.length - 1] = {
+                    ...last,
+                    citations: [],
+                    provider: event.provider,
+                    model: event.model,
+                    degraded: event.degraded,
+                  };
+                }
+                return next;
+              });
+            } else if (event.type === "token") {
+              pending += event.token;
+              if (rafId === null) rafId = requestAnimationFrame(flush);
+            } else if (event.type === "done") {
+              if (rafId !== null) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+              }
+              if (pending) {
+                const chunk = pending;
+                pending = "";
                 setMessages((prev) => {
                   const next = [...prev];
                   const last = next[next.length - 1];
                   if (last && last.role === "assistant") {
-                    next[next.length - 1] = {
-                      ...last,
-                      citations: event.citations || [],
-                      provider: event.provider,
-                      model: event.model,
-                      degraded: event.degraded,
-                    };
-                  }
-                  return next;
-                });
-              } else if (event.type === "token") {
-                setMessages((prev) => {
-                  const next = [...prev];
-                  const last = next[next.length - 1];
-                  if (last && last.role === "assistant") {
-                    next[next.length - 1] = {
-                      ...last,
-                      text: last.text + event.token,
-                    };
-                  }
-                  return next;
-                });
-              } else if (event.type === "done") {
-                setMessages((prev) => {
-                  const next = [...prev];
-                  const last = next[next.length - 1];
-                  if (last && last.role === "assistant") {
-                    next[next.length - 1] = {
-                      ...last,
-                      text: event.answer || last.text,
-                      citations: event.citations || last.citations,
-                      provider: event.provider || last.provider,
-                      model: event.model || last.model,
-                      degraded: event.degraded ?? last.degraded,
-                    };
+                    next[next.length - 1] = { ...last, text: last.text + chunk };
                   }
                   return next;
                 });
               }
-            } catch {
-              // Ignore partial JSON parse errors
+              setStatusText("");
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last && last.role === "assistant") {
+                  next[next.length - 1] = {
+                    ...last,
+                    text: event.answer || last.text,
+                    citations: event.citations || last.citations,
+                    provider: event.provider || last.provider,
+                    model: event.model || last.model,
+                    degraded: event.degraded ?? last.degraded,
+                  };
+                }
+                return next;
+              });
             }
+          } catch {
+            // Ignore partial JSON parse errors
           }
         }
       }
@@ -428,6 +492,7 @@ export default function App() {
       });
     } finally {
       setLoading(false);
+      setStatusText("");
     }
   };
 
@@ -710,7 +775,7 @@ export default function App() {
                 )}
 
                 <div className="whitespace-pre-wrap">
-                  {m.text}
+                  <AnswerBody text={m.text} citations={m.citations} onSelect={setActiveCitation} />
                   {loading && idx === messages.length - 1 && m.role === "assistant" && (
                     <span className="inline-block w-1.5 h-4 ml-0.5 bg-blue-500 animate-pulse align-middle" />
                   )}
@@ -763,7 +828,7 @@ export default function App() {
                 <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.15s]" />
                 <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce" />
               </div>
-              <span className="text-xs text-slate-400">Thinking…</span>
+              <span className="text-xs text-slate-400">{statusText || "Thinking…"}</span>
             </div>
           )}
           </div>

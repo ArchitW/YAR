@@ -109,7 +109,7 @@ def searxng_settings() -> dict[str, Any]:
     """Settings for SearXNG metasearch and autonomous web tool fallback."""
     return {
         "base_url": os.getenv("SEARXNG_BASE_URL", "").rstrip("/"),
-        "enabled": os.getenv("WEB_SEARCH_ENABLED", "true").strip().lower() in ("true", "1", "yes"),
+        "enabled": os.getenv("WEB_SEARCH_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
         "confidence_threshold": float(os.getenv("WEB_SEARCH_CONFIDENCE_THRESHOLD", "0.25")),
     }
 
