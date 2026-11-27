@@ -124,15 +124,19 @@ class FakeStreamingProvider:
 
 class TestStreamAnswerQueryService:
     @patch("app.services.chat.retrieve", return_value=[])
-    def test_stream_no_context_yields_refusal(self, mock_ret):
-        events = list(stream_answer_query(workspace_id=1, message="Anything?"))
-        assert len(events) == 3
+    def test_stream_no_context_yields_conversational(self, mock_ret):
+        with patch("app.services.chat.get_provider", return_value=None):
+            events = list(stream_answer_query(workspace_id=1, message="Anything?"))
+
         assert events[0]["type"] == "init"
         assert events[0]["citations"] == []
-        assert events[1]["type"] == "token"
-        assert events[1]["token"] == NO_CONTEXT_ANSWER
-        assert events[2]["type"] == "done"
-        assert events[2]["answer"] == NO_CONTEXT_ANSWER
+        assert events[0]["provider"] == "none"
+
+        tokens = "".join(e["token"] for e in events if e["type"] == "token")
+        done = events[-1]
+        assert done["type"] == "done"
+        assert done["answer"] == tokens
+        assert "not connected" in done["answer"]
 
     @patch("app.services.chat.retrieve")
     def test_stream_with_provider_yields_progressive_tokens(self, mock_ret):

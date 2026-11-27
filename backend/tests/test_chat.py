@@ -40,16 +40,19 @@ def hits(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return found
 
 
-def test_refuses_without_retrieved_context(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_conversational_answer_without_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(chat, "retrieve", lambda *args, **kwargs: [])
-    provider = FakeProvider()
+    provider = FakeProvider(reply="Hi there!")
 
-    result = chat.answer_query(1, "What is revenue?", provider=provider)
+    result = chat.answer_query(1, "Hi", provider=provider)
 
-    assert result["provider"] == "none"
+    assert result["provider"] == "fake"
     assert result["citations"] == []
-    assert result["answer"] == chat.NO_CONTEXT_ANSWER
-    assert provider.calls == []
+    assert result["answer"] == "Hi there!"
+    # Conversational path still calls the LLM exactly once (no grounding).
+    assert len(provider.calls) == 1
+    system_prompt, _ = provider.calls[0]
+    assert "untrusted data" in system_prompt
 
 
 def test_answers_from_provider_with_numbered_citations(hits: list[dict[str, Any]]) -> None:

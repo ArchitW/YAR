@@ -121,3 +121,18 @@ def ollama_settings() -> dict[str, Any]:
         "autodiscover": os.getenv("OLLAMA_AUTODISCOVER", "true").strip().lower() in ("true", "1", "yes"),
         "timeout": float(os.getenv("OLLAMA_TIMEOUT", "3.0")),
     }
+
+
+def router_settings() -> dict[str, Any]:
+    """Settings for the small decision router (e.g. Kev-0.8B via System One API).
+
+    The router only classifies the query into a route; it never generates text.
+    Disabled by default and falls back to the built-in heuristics when unset or
+    unreachable, so a missing router server never breaks chat.
+    """
+    return {
+        "enabled": os.getenv("DECISION_ROUTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+        "base_url": os.getenv("DECISION_ROUTER_BASE_URL", "http://127.0.0.1:8008").rstrip("/"),
+        "model": os.getenv("DECISION_ROUTER_MODEL", "kev-latest").strip(),
+        "timeout": float(os.getenv("DECISION_ROUTER_TIMEOUT", "5.0")),
+    }
