@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..core.database import get_db
 from ..core.middleware import get_request_trace_id
-from ..models.chat import ChatMessage
+from ..models.chat import Chat, ChatMessage
 from ..services.audit import AuditService
 from ..services.chat import answer_query, stream_answer_query
 from ..services.export import ExportService
@@ -23,6 +23,31 @@ class ChatRequest(BaseModel):
     workspace_id: int
     message: str = Field(min_length=1)
     mode: str = "auto"
+    chat_id: int | None = None
+
+
+def _ensure_default_chat(db: Session, workspace_id: int) -> Chat:
+    """Return the workspace's first chat, creating a default one if none exist."""
+    chat = (
+        db.query(Chat)
+        .filter(Chat.workspace_id == workspace_id)
+        .order_by(Chat.id.asc())
+        .first()
+    )
+    if chat is None:
+        chat = Chat(workspace_id=workspace_id, title="New chat")
+        db.add(chat)
+        db.commit()
+        db.refresh(chat)
+    return chat
+
+
+def _resolve_chat(db: Session, workspace_id: int, chat_id: int | None) -> Chat:
+    if chat_id is not None:
+        chat = db.get(Chat, chat_id)
+        if chat is not None and chat.workspace_id == workspace_id:
+            return chat
+    return _ensure_default_chat(db, workspace_id)
 
 
 class ChatResponse(BaseModel):
@@ -224,27 +249,41 @@ def chat(
 ) -> ChatResponse:
     trace_id = get_request_trace_id(request)
 
+    chat = _resolve_chat(db, req.workspace_id, req.chat_id)
+    use_local = chat.use_local_knowledge
+    save_mem = chat.save_to_memory
+
+    # Auto-title the chat from the first user message
+    if chat.title in (None, "", "New chat"):
+        chat.title = req.message.strip()[:40] or "New chat"
+
     # 1. Persist user message to chat history
     user_msg = ChatMessage(
         workspace_id=req.workspace_id,
+        chat_id=chat.id,
         role="user",
         content=req.message,
     )
     db.add(user_msg)
 
     # 2. Record interaction in cognitive memory stream
-    try:
-        MemoryService.record_interaction(db, req.workspace_id, "user", req.message)
-    except Exception:
-        # Memory logging failure should never crash the chat session
-        pass
+    if save_mem:
+        try:
+            MemoryService.record_interaction(db, req.workspace_id, "user", req.message)
+        except Exception:
+            # Memory logging failure should never crash the chat session
+            pass
 
     # 3. Answer query with document retrieval + memory context
-    result = answer_query(req.workspace_id, req.message, req.mode, db=db)
+    result = answer_query(
+        req.workspace_id, req.message, req.mode, db=db,
+        use_local_knowledge=use_local, save_to_memory=save_mem,
+    )
 
     # 4. Persist assistant response to chat history
     assistant_msg = ChatMessage(
         workspace_id=req.workspace_id,
+        chat_id=chat.id,
         role="assistant",
         content=result["answer"],
         citations=result["citations"],
@@ -255,10 +294,11 @@ def chat(
     db.add(assistant_msg)
 
     # 5. Record assistant response in cognitive memory stream
-    try:
-        MemoryService.record_interaction(db, req.workspace_id, "assistant", result["answer"])
-    except Exception:
-        pass
+    if save_mem:
+        try:
+            MemoryService.record_interaction(db, req.workspace_id, "assistant", result["answer"])
+        except Exception:
+            pass
 
     # 6. Record audit log for chat query
     AuditService.record(
@@ -292,26 +332,38 @@ def chat_stream(
 ):
     trace_id = get_request_trace_id(request)
 
+    chat = _resolve_chat(db, req.workspace_id, req.chat_id)
+    use_local = chat.use_local_knowledge
+    save_mem = chat.save_to_memory
+
+    if chat.title in (None, "", "New chat"):
+        chat.title = req.message.strip()[:40] or "New chat"
+
     # 1. Persist user message to chat history immediately
     user_msg = ChatMessage(
         workspace_id=req.workspace_id,
+        chat_id=chat.id,
         role="user",
         content=req.message,
     )
     db.add(user_msg)
 
     # 2. Record interaction in cognitive memory stream
-    try:
-        MemoryService.record_interaction(db, req.workspace_id, "user", req.message)
-    except Exception:
-        pass
+    if save_mem:
+        try:
+            MemoryService.record_interaction(db, req.workspace_id, "user", req.message)
+        except Exception:
+            pass
 
     db.commit()
 
     def event_generator():
         final_result = None
         try:
-            for event in stream_answer_query(req.workspace_id, req.message, req.mode, db=db):
+            for event in stream_answer_query(
+                req.workspace_id, req.message, req.mode, db=db,
+                use_local_knowledge=use_local, save_to_memory=save_mem,
+            ):
                 if event.get("type") == "done":
                     final_result = event
                 yield f"data: {json.dumps(event)}\n\n"
@@ -327,6 +379,7 @@ def chat_stream(
             try:
                 assistant_msg = ChatMessage(
                     workspace_id=req.workspace_id,
+                    chat_id=chat.id,
                     role="assistant",
                     content=final_result.get("answer", ""),
                     citations=final_result.get("citations", []),
@@ -335,10 +388,11 @@ def chat_stream(
                     degraded=final_result.get("degraded", False),
                 )
                 db.add(assistant_msg)
-                try:
-                    MemoryService.record_interaction(db, req.workspace_id, "assistant", final_result.get("answer", ""))
-                except Exception:
-                    pass
+                if save_mem:
+                    try:
+                        MemoryService.record_interaction(db, req.workspace_id, "assistant", final_result.get("answer", ""))
+                    except Exception:
+                        pass
 
                 AuditService.record(
                     db=db,
@@ -389,13 +443,15 @@ class HistoryItem(BaseModel):
 @router.get("/history")
 def chat_history(
     workspace_id: int,
+    chat_id: int | None = Query(default=None),
     limit: int = Query(default=50, le=200),
     db: Session = Depends(get_db),
 ) -> list[HistoryItem]:
+    q = db.query(ChatMessage).filter(ChatMessage.workspace_id == workspace_id)
+    if chat_id is not None:
+        q = q.filter(ChatMessage.chat_id == chat_id)
     rows = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.workspace_id == workspace_id)
-        .order_by(ChatMessage.created_at.asc())
+        q.order_by(ChatMessage.created_at.asc())
         .limit(limit)
         .all()
     )
@@ -458,3 +514,91 @@ def export_chat(
             "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )
+
+
+class ChatCreate(BaseModel):
+    workspace_id: int
+    title: str = "New chat"
+    use_local_knowledge: bool = True
+    save_to_memory: bool = True
+
+
+class ChatUpdate(BaseModel):
+    title: str | None = None
+    use_local_knowledge: bool | None = None
+    save_to_memory: bool | None = None
+
+
+class ChatItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    workspace_id: int
+    title: str
+    use_local_knowledge: bool
+    save_to_memory: bool
+    created_at: str
+
+
+def _chat_item(c: Chat) -> ChatItem:
+    return ChatItem(
+        id=c.id,
+        workspace_id=c.workspace_id,
+        title=c.title or "New chat",
+        use_local_knowledge=bool(c.use_local_knowledge),
+        save_to_memory=bool(c.save_to_memory),
+        created_at=str(c.created_at),
+    )
+
+
+@router.get("/chats", response_model=list[ChatItem])
+def list_chats(workspace_id: int, db: Session = Depends(get_db)):
+    _ensure_default_chat(db, workspace_id)
+    rows = (
+        db.query(Chat)
+        .filter(Chat.workspace_id == workspace_id)
+        .order_by(Chat.id.asc())
+        .all()
+    )
+    return [_chat_item(c) for c in rows]
+
+
+@router.post("/chats", response_model=ChatItem)
+def create_chat(req: ChatCreate, db: Session = Depends(get_db)):
+    chat = Chat(
+        workspace_id=req.workspace_id,
+        title=req.title or "New chat",
+        use_local_knowledge=req.use_local_knowledge,
+        save_to_memory=req.save_to_memory,
+    )
+    db.add(chat)
+    db.commit()
+    db.refresh(chat)
+    return _chat_item(chat)
+
+
+@router.patch("/chats/{chat_id}", response_model=ChatItem)
+def update_chat(chat_id: int, req: ChatUpdate, db: Session = Depends(get_db)):
+    chat = db.get(Chat, chat_id)
+    if not chat:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    if req.title is not None:
+        chat.title = req.title
+    if req.use_local_knowledge is not None:
+        chat.use_local_knowledge = req.use_local_knowledge
+    if req.save_to_memory is not None:
+        chat.save_to_memory = req.save_to_memory
+    db.commit()
+    db.refresh(chat)
+    return _chat_item(chat)
+
+
+@router.delete("/chats/{chat_id}")
+def delete_chat(chat_id: int, db: Session = Depends(get_db)):
+    chat = db.get(Chat, chat_id)
+    if not chat:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    db.query(ChatMessage).filter(ChatMessage.chat_id == chat_id).delete()
+    db.delete(chat)
+    db.commit()
+    return {"deleted": chat_id}
