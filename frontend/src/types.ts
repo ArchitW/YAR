@@ -57,6 +57,8 @@ export interface Message {
   provider?: string;
   model?: string;
   degraded?: boolean;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 
 export interface MemoryNodeItem {

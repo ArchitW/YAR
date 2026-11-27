@@ -263,6 +263,21 @@ export default function App() {
     }
   };
 
+  // Summarize + drop older turns to free local-model context
+  const compactConversation = async () => {
+    if (!activeChat || !activeWorkspace) return;
+    try {
+      await fetch(`${API_BASE}/chat/chats/${activeChat.id}/compact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keep: 6 }),
+      });
+      await loadChatHistory(activeChat.id, activeWorkspace.id);
+    } catch {
+      // ignore
+    }
+  };
+
   // Update per-chat settings (local knowledge / memory)
   const updateActiveChat = async (patch: Partial<Chat>) => {
     if (!activeChat) return;
@@ -356,6 +371,8 @@ export default function App() {
             provider: data.provider,
             model: data.model,
             degraded: data.degraded,
+            input_tokens: data.input_tokens,
+            output_tokens: data.output_tokens,
           },
         ]);
         return;
@@ -459,6 +476,8 @@ export default function App() {
                     provider: event.provider || last.provider,
                     model: event.model || last.model,
                     degraded: event.degraded ?? last.degraded,
+                    input_tokens: event.input_tokens ?? last.input_tokens,
+                    output_tokens: event.output_tokens ?? last.output_tokens,
                   };
                 }
                 return next;
@@ -661,6 +680,18 @@ export default function App() {
                   <Terminal className="w-3.5 h-3.5" />
                   <span>Backend logs</span>
                 </button>
+
+                <button
+                  onClick={() => {
+                    compactConversation();
+                    setIsMoreOpen(false);
+                    setIsSidebarOpen(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Compact conversation</span>
+                </button>
                 <div className="my-1 border-t border-slate-100" />
                 <div className="px-2 py-1.5 text-[10px] leading-snug text-slate-400">
                   YAR · workspace knowledge assistant
@@ -816,7 +847,13 @@ export default function App() {
                         );
                       })}
                     </div>
-                  )}
+                    )}
+
+                {m.role === "assistant" && (m.input_tokens != null || m.output_tokens != null) && (
+                  <div className="mt-2 text-[10px] font-mono text-slate-400">
+                    {m.input_tokens ?? 0} in · {m.output_tokens ?? 0} out tokens
+                  </div>
+                )}
               </div>
             </div>
           ))}

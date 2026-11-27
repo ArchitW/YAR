@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Iterator
 
 from .providers import LLMProvider, ProviderError, get_provider
 from .retrieval import retrieve
 
 logger = logging.getLogger(__name__)
+
+# Cap the grounded context so local models with small context windows don't 400.
+MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "24000"))
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate (~4 chars/token) for local models without a tokenizer."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
 
 SYSTEM_PROMPT = """You are YAR, a retrieval-augmented assistant.
 
@@ -245,6 +256,8 @@ def answer_query(
             "provider": llm.name,
             "model": llm.model,
             "degraded": False,
+            "input_tokens": estimate_tokens(CONVERSATIONAL_SYSTEM_PROMPT) + estimate_tokens(message),
+            "output_tokens": estimate_tokens(answer),
         }
 
     if llm is None:
@@ -270,7 +283,7 @@ def answer_query(
     prompt_parts = []
     if memory_context:
         prompt_parts.append(f"Workspace Context & Memory:\n{memory_context}")
-    prompt_parts.append(f"Question: {message}\n\nContext:\n{context}")
+    prompt_parts.append(f"Question: {message}\n\nContext:\n{context[:MAX_CONTEXT_CHARS]}")
     user_prompt = "\n\n".join(prompt_parts)
 
     try:
@@ -315,6 +328,8 @@ def answer_query(
         "faithfulness_score": faithfulness.score,
         "hallucination_detected": not faithfulness.is_faithful,
         "unsupported_claims": faithfulness.unsupported_claims,
+        "input_tokens": estimate_tokens(SYSTEM_PROMPT) + estimate_tokens(user_prompt),
+        "output_tokens": estimate_tokens(answer),
     }
 
 
@@ -405,7 +420,9 @@ def stream_answer_query(
         yield {"type": "init", "citations": [], "provider": provider_name, "model": model_name, "degraded": False}
         for token in _tokenize(answer):
             yield {"type": "token", "token": token}
-        yield {"type": "done", "answer": answer, "citations": [], "provider": provider_name, "model": model_name, "degraded": False}
+        yield {"type": "done", "answer": answer, "citations": [], "provider": provider_name, "model": model_name, "degraded": False,
+               "input_tokens": estimate_tokens(CONVERSATIONAL_SYSTEM_PROMPT) + estimate_tokens(message),
+               "output_tokens": estimate_tokens(answer)}
         return
 
     if llm is None:
@@ -443,7 +460,7 @@ def stream_answer_query(
     prompt_parts = []
     if memory_context:
         prompt_parts.append(f"Workspace Context & Memory:\n{memory_context}")
-    prompt_parts.append(f"Question: {message}\n\nContext:\n{context}")
+    prompt_parts.append(f"Question: {message}\n\nContext:\n{context[:MAX_CONTEXT_CHARS]}")
     user_prompt = "\n\n".join(prompt_parts)
 
     yield {
@@ -484,6 +501,8 @@ def stream_answer_query(
             "faithfulness_score": faithfulness.score,
             "hallucination_detected": not faithfulness.is_faithful,
             "unsupported_claims": faithfulness.unsupported_claims,
+            "input_tokens": estimate_tokens(SYSTEM_PROMPT) + estimate_tokens(user_prompt),
+            "output_tokens": estimate_tokens(answer),
         }
     except ProviderError:
         logger.warning(

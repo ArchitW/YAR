@@ -68,6 +68,9 @@ class OpenAICompatibleProvider:
                 )
                 response.raise_for_status()
                 data = response.json()
+        except httpx.HTTPStatusError as exc:
+            body = (exc.response.text or "")[:300]
+            raise ProviderError(f"provider request failed: {exc} — {body}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"provider request failed: {exc}") from exc
         except ValueError as exc:
@@ -121,6 +124,9 @@ class OpenAICompatibleProvider:
                                     yield content
                             except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                                 continue
+        except httpx.HTTPStatusError as exc:
+            body = (exc.response.text or "")[:300]
+            raise ProviderError(f"provider stream request failed: {exc} — {body}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"provider stream request failed: {exc}") from exc
 

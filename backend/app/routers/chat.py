@@ -14,6 +14,7 @@ from ..services.audit import AuditService
 from ..services.chat import answer_query, stream_answer_query
 from ..services.export import ExportService
 from ..services.memory import MemoryService
+from ..services.providers import get_provider
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -602,3 +603,61 @@ def delete_chat(chat_id: int, db: Session = Depends(get_db)):
     db.delete(chat)
     db.commit()
     return {"deleted": chat_id}
+
+
+class CompactRequest(BaseModel):
+    keep: int = 6
+
+
+@router.post("/chats/{chat_id}/compact")
+def compact_chat(chat_id: int, req: CompactRequest, db: Session = Depends(get_db)):
+    """Summarize older messages and drop them, keeping the last `keep` turns.
+
+    Frees local-model context so long chats keep working. Falls back to a plain
+    truncation when no LLM is connected.
+    """
+    chat = db.get(Chat, chat_id)
+    if not chat:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+
+    msgs = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.chat_id == chat_id)
+        .order_by(ChatMessage.id.asc())
+        .all()
+    )
+    keep = max(2, req.keep)
+    if len(msgs) <= keep:
+        return {"compacted": False, "removed": 0, "remaining": len(msgs), "summary": None}
+
+    older = msgs[:-keep]
+    older_ids = [m.id for m in older]
+
+    transcript = "\n".join(f"{m.role}: {m.content}" for m in older)
+    summary = None
+    llm = get_provider()
+    if llm is not None:
+        try:
+            summary = llm.complete(
+                "You compress conversations. Summarize the following exchange in concise bullet points, "
+                "preserving key facts, decisions, and open questions.",
+                transcript[:8000],
+            )
+        except Exception:
+            logger.warning("Compaction summary failed for chat %s", chat_id, exc_info=True)
+
+    db.query(ChatMessage).filter(
+        ChatMessage.chat_id == chat_id, ChatMessage.id.in_(older_ids)
+    ).delete(synchronize_session=False)
+
+    if summary:
+        db.add(
+            ChatMessage(
+                workspace_id=chat.workspace_id,
+                chat_id=chat_id,
+                role="assistant",
+                content=f"Summary of earlier conversation:\n{summary}",
+            )
+        )
+    db.commit()
+    return {"compacted": True, "removed": len(older), "summary": summary}
