@@ -64,6 +64,7 @@ def parse_chunk_metadata(chunk: str) -> dict[str, Any]:
 def upload_document(
     workspace_id: int,
     file: UploadFile = File(...),
+    index_to_master: bool = False,
     request: Request = None,
     db: Session = Depends(get_db),
 ):
@@ -98,6 +99,7 @@ def upload_document(
         status_val = "error"           # parser matched but extraction produced nothing
     doc = Document(
         workspace_id=workspace_id,
+        is_master=index_to_master,
         name=file.filename,
         file_type=file.content_type or "unknown",
         status=status_val,
@@ -157,6 +159,7 @@ def upload_document(
                 },
                 payload={
                     "workspace_id": workspace_id,
+                    "is_master": index_to_master,
                     "document_id": doc.id,
                     "file_name": doc.name,
                     "chunk_index": item["child_index"],
@@ -185,6 +188,7 @@ def _sse_event(payload: dict[str, Any]) -> str:
 def upload_document_stream(
     workspace_id: int,
     file: UploadFile = File(...),
+    index_to_master: bool = False,
     request: Request = None,
     db: Session = Depends(get_db),
 ):
@@ -246,6 +250,7 @@ def upload_document_stream(
 
             doc = Document(
                 workspace_id=workspace_id,
+                is_master=index_to_master,
                 name=filename,
                 file_type=content_type or "unknown",
                 status=status_val,

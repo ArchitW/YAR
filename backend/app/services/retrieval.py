@@ -22,13 +22,21 @@ def rewrite_query(query: str) -> list[str]:
 
 
 def _build_workspace_filter(workspace_id: int) -> Filter:
-    """Build Qdrant filter condition to enforce workspace isolation at database level."""
+    """Build a Qdrant filter enforcing workspace isolation at the DB level.
+
+    A workspace sees its own chunks plus any chunk flagged as master knowledge
+    (``is_master == True``), which is shared across all workspaces.
+    """
     return Filter(
-        must=[
+        should=[
             FieldCondition(
                 key="workspace_id",
                 match=MatchValue(value=workspace_id),
-            )
+            ),
+            FieldCondition(
+                key="is_master",
+                match=MatchValue(value=True),
+            ),
         ]
     )
 
@@ -138,14 +146,16 @@ def retrieve(
     cands: list[dict[str, Any]] = []
     for pid, sc in all_scores.items():
         pl = payload_map.get(pid) or {}
-        # Defense-in-depth verification
-        if pl.get("workspace_id") is not None and pl.get("workspace_id") != workspace_id:
+        # Defense-in-depth verification (master docs are shared across workspaces)
+        is_master = bool(pl.get("is_master", False))
+        if not is_master and pl.get("workspace_id") is not None and pl.get("workspace_id") != workspace_id:
             continue
         cands.append({
             "id": pid,
             "score": sc,
             "document_id": pl.get("document_id"),
             "file_name": pl.get("file_name"),
+            "is_master": is_master,
             "chunk_text": pl.get("text", ""),
             "text": pl.get("text", ""),
             "chunk_index": pl.get("chunk_index"),
