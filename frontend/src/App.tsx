@@ -3,6 +3,8 @@ import {
   AlertCircle,
   BookOpen,
   Brain,
+  Check,
+  Copy,
   ExternalLink,
   Eye,
   EyeOff,
@@ -23,7 +25,7 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { Chat, Citation, DocumentItem, Message, Workspace } from "./types";
+import { Chat, Citation, DocumentItem, Message as ChatMessage, Workspace } from "./types";
 import WorkspaceSelector from "./components/WorkspaceSelector";
 import WorkspaceModal from "./components/WorkspaceModal";
 import DocumentDropzone from "./components/DocumentDropzone";
@@ -33,10 +35,39 @@ import CitationInspector from "./components/CitationInspector";
 import { ModelsStatus } from "./components/ModelSettingsPanel";
 import SettingsModal, { SettingsTab } from "./components/SettingsModal";
 import TerminalLogsDrawer from "./components/TerminalLogsDrawer";
+import {
+  ChatContainerContent,
+  ChatContainerRoot,
+  ChatContainerScrollAnchor,
+} from "@/components/ui/chat-container";
+import { ScrollButton } from "@/components/ui/scroll-button";
+import {
+  Message,
+  MessageAction,
+  MessageActions,
+  MessageContent,
+} from "@/components/ui/message";
+import {
+  PromptInput,
+  PromptInputAction,
+  PromptInputActions,
+  PromptInputTextarea,
+} from "@/components/ui/prompt-input";
+import { Loader } from "@/components/ui/loader";
+import { Button } from "@/components/ui/button";
 
 const API_BASE = "http://localhost:8000";
 
-function AnswerBody({
+function linkifyCitations(text: string, citations?: Citation[]): string {
+  if (!citations || citations.length === 0) return text;
+  const validIndices = new Set(citations.map((c) => c.index));
+  return text.replace(/\[(\d+)\](?!\()/g, (match, numStr) => {
+    const num = Number(numStr);
+    return validIndices.has(num) ? `[${match}](#cite-${num})` : match;
+  });
+}
+
+function AssistantAnswer({
   text,
   citations,
   onSelect,
@@ -45,31 +76,45 @@ function AnswerBody({
   citations?: Citation[];
   onSelect: (c: Citation) => void;
 }) {
-  if (!citations || citations.length === 0) return <>{text}</>;
-  const parts = text.split(/(\[\d+\])/g);
+  const markdownText = linkifyCitations(text, citations);
   return (
-    <>
-      {parts.map((part, i) => {
-        const m = part.match(/^\[(\d+)\]$/);
-        if (m) {
-          const c = citations.find((x) => x.index === Number(m[1]));
-          if (c) {
-            return (
-              <button
-                key={i}
-                type="button"
-                onClick={() => onSelect(c)}
-                className="inline align-baseline text-blue-600 hover:text-blue-700 hover:underline font-medium"
-                title={c.file_name || c.title || "Source"}
-              >
-                {part}
-              </button>
-            );
+    <MessageContent
+      markdown
+      className="bg-transparent p-0 text-base leading-relaxed text-slate-800 max-w-none"
+      components={{
+        a: ({ href, children, ...props }) => {
+          if (href?.startsWith("#cite-")) {
+            const idx = Number(href.slice(6));
+            const citation = citations?.find((x) => x.index === idx);
+            if (citation) {
+              return (
+                <button
+                  type="button"
+                  onClick={() => onSelect(citation)}
+                  className="inline align-baseline text-blue-600 hover:text-blue-700 hover:underline font-medium"
+                  title={citation.file_name || citation.title || "Source"}
+                >
+                  {children}
+                </button>
+              );
+            }
           }
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </>
+          return (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className="text-blue-600 hover:underline"
+              {...props}
+            >
+              {children}
+            </a>
+          );
+        },
+      }}
+    >
+      {markdownText}
+    </MessageContent>
   );
 }
 
@@ -85,7 +130,8 @@ export default function App() {
 
   // Chat & Retrieval state
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [statusText, setStatusText] = useState("");
   const [mode, setMode] = useState<"auto" | "hybrid" | "semantic" | "keyword">("auto");
@@ -130,6 +176,21 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!activeWorkspace) return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("workspace", String(activeWorkspace.id));
+    if (activeChat) {
+      params.set("chat", String(activeChat.id));
+    } else {
+      params.delete("chat");
+    }
+    const nextUrl = `${window.location.pathname}?${params.toString()}`;
+    if (window.location.pathname + window.location.search !== nextUrl) {
+      window.history.replaceState(null, "", nextUrl);
+    }
+  }, [activeWorkspace, activeChat]);
+
   // 1. Fetch or initialize workspaces & model status on mount
   useEffect(() => {
     fetchWorkspaces();
@@ -155,7 +216,8 @@ export default function App() {
         }
       } else {
         setWorkspaces(data);
-        const savedWsId = localStorage.getItem("yar_active_ws");
+        const urlWsId = new URLSearchParams(window.location.search).get("workspace");
+        const savedWsId = urlWsId || localStorage.getItem("yar_active_ws");
         const found = data.find((w) => String(w.id) === savedWsId);
         const selected = found || data[0];
         setActiveWorkspace(selected);
@@ -190,7 +252,10 @@ export default function App() {
       if (!res.ok) throw new Error("Failed to load chats");
       const data: Chat[] = await res.json();
       setChats(data);
-      const savedChatId = localStorage.getItem(`yar_active_chat_${wsId}`);
+      const params = new URLSearchParams(window.location.search);
+      const urlWsId = params.get("workspace");
+      const urlChatId = !urlWsId || urlWsId === String(wsId) ? params.get("chat") : null;
+      const savedChatId = urlChatId || localStorage.getItem(`yar_active_chat_${wsId}`);
       const found = data.find((c) => String(c.id) === savedChatId);
       setActiveChat(found || data[0] || null);
     } catch {
@@ -769,152 +834,233 @@ export default function App() {
         </header>
 
         {/* Message History */}
-        <main className="flex-1 overflow-y-auto">
-          <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
-          {messages.length === 0 && (
-            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
-              <BookOpen className="w-12 h-12 stroke-[1.5] mb-3 text-slate-300" />
-              <p className="text-sm font-medium text-slate-600">
-                {activeChat ? activeChat.title || "Start a conversation" : "No conversation yet"}
-              </p>
-              <p className="text-xs max-w-sm mt-1">
-                Chat freely, or upload documents (paperclip below) to ground answers with citations.
-                Use <span className="font-medium text-slate-500">Local KB</span> to search your files and
-                <span className="font-medium text-slate-500"> Memory</span> to remember this chat.
-              </p>
-            </div>
-          )}
+        <ChatContainerRoot className="relative flex-1 min-h-0">
+          <ChatContainerContent className="max-w-3xl mx-auto p-4 sm:p-6 space-y-5">
+            {messages.length === 0 && (
+              <div className="h-full min-h-[50vh] flex flex-col items-center justify-center text-center p-6 text-slate-400">
+                <BookOpen className="w-12 h-12 stroke-[1.5] mb-3 text-slate-300" />
+                <p className="text-sm font-medium text-slate-600">
+                  {activeChat ? activeChat.title || "Start a conversation" : "No conversation yet"}
+                </p>
+                <p className="text-xs max-w-sm mt-1">
+                  Chat freely, or upload documents (paperclip below) to ground answers with citations.
+                  Use <span className="font-medium text-slate-500">Local KB</span> to search your files and
+                  <span className="font-medium text-slate-500"> Memory</span> to remember this chat.
+                </p>
+              </div>
+            )}
 
-          {messages.map((m, idx) => (
-            <div
-              key={idx}
-              className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}
-            >
-              <div
-                className={`max-w-2xl px-4 py-3 rounded-2xl shadow-sm text-base leading-relaxed ${
-                  m.role === "user"
-                    ? "bg-blue-600 text-white rounded-br-none"
-                    : "bg-white border border-slate-200 text-slate-800 rounded-bl-none"
-                }`}
-              >
-                {/* Assistant Metadata / Badges */}
-                {m.role === "assistant" && m.degraded && (
-                  <div className="flex items-center gap-1 text-xs text-amber-600 mb-2 font-medium bg-amber-50 px-2 py-0.5 rounded border border-amber-200 w-fit">
-                    <AlertCircle className="w-3 h-3" />
-                    <span>Extractive Fallback</span>
-                  </div>
-                )}
+            {messages.map((m, idx) => {
+              const isUser = m.role === "user";
+              const isLastAssistant = loading && idx === messages.length - 1 && !isUser;
 
-                <div className="whitespace-pre-wrap">
-                  <AnswerBody text={m.text} citations={m.citations} onSelect={setActiveCitation} />
-                  {loading && idx === messages.length - 1 && m.role === "assistant" && (
-                    <span className="inline-block w-1.5 h-4 ml-0.5 bg-blue-500 animate-pulse align-middle" />
-                  )}
-                </div>
-
-                {/* Citations List */}
-                {m.role === "assistant" &&
-                  showCitations &&
-                  m.citations &&
-                  m.citations.length > 0 && (
-                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap gap-1.5 items-center">
-                      <span className="text-[11px] font-semibold text-slate-400 mr-1 flex items-center gap-1">
-                        <Sparkles className="w-3 h-3 text-blue-500" />
-                        Sources:
-                      </span>
-                      {m.citations.map((c) => {
-                        const isSelected = activeCitation?.index === c.index;
-                        const labelParts = [c.file_name || c.title || (c.is_web ? "Web" : "Doc")];
-                        if (c.page_number != null) labelParts.push(`p.${c.page_number}`);
-                        else if (c.section) labelParts.push(`§ ${c.section}`);
-
-                        return (
-                          <button
-                            key={c.index}
-                            onClick={() => setActiveCitation(c)}
-                            className={`px-2 py-0.5 rounded text-xs font-mono transition-all flex items-center gap-1 border ${
-                              isSelected
-                                ? "bg-blue-600 text-white border-blue-600 shadow-sm"
-                                : c.is_web
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
-                                : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300"
-                            }`}
-                          >
-                            {c.is_web ? <Globe className="w-2.5 h-2.5 text-emerald-600" /> : null}
-                            <span className="font-bold text-[10px]">[{c.index}]</span>
-                            <span className="max-w-[140px] truncate">{labelParts.join(" ")}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
+              return (
+                <Message
+                  key={idx}
+                  className={`flex-col ${isUser ? "items-end" : "items-start"}`}
+                >
+                  <div
+                    className={`max-w-2xl px-4 py-3 rounded-2xl shadow-sm text-base leading-relaxed ${
+                      isUser
+                        ? "bg-blue-600 text-white rounded-br-none"
+                        : "bg-white border border-slate-200 text-slate-800 rounded-bl-none w-full"
+                    }`}
+                  >
+                    {!isUser && m.degraded && (
+                      <div className="flex items-center gap-1 text-xs text-amber-600 mb-2 font-medium bg-amber-50 px-2 py-0.5 rounded border border-amber-200 w-fit">
+                        <AlertCircle className="w-3 h-3" />
+                        <span>Extractive Fallback</span>
+                      </div>
                     )}
 
-                {m.role === "assistant" && (m.input_tokens != null || m.output_tokens != null) && (
-                  <div className="mt-2 text-[10px] font-mono text-slate-400">
-                    {m.input_tokens ?? 0} in · {m.output_tokens ?? 0} out tokens
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
+                    {isUser ? (
+                      <MessageContent className="bg-transparent p-0 text-white whitespace-pre-wrap">
+                        {m.text}
+                      </MessageContent>
+                    ) : isLastAssistant && !m.text ? (
+                      <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-blue-50/90 border border-blue-200 text-blue-800">
+                        <Loader variant="typing" size="sm" className="text-blue-600 shrink-0" />
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium">
+                            {statusText || "Retrieving context & generating response…"}
+                          </span>
+                          <span className="text-[11px] text-blue-600/80">
+                            {activeChat?.use_local_knowledge
+                              ? "Searching workspace knowledge base"
+                              : "Preparing response"}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        {isLastAssistant && statusText && (
+                          <div className="mb-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-blue-50 border border-blue-200 text-xs font-medium text-blue-700">
+                            <Loader variant="pulse-dot" size="sm" />
+                            <span>{statusText}</span>
+                          </div>
+                        )}
+                        {m.text ? (
+                          <AssistantAnswer
+                            text={m.text}
+                            citations={m.citations}
+                            onSelect={setActiveCitation}
+                          />
+                        ) : (
+                          <p className="text-sm italic text-slate-400">
+                            No text response was recorded for this turn.
+                          </p>
+                        )}
+                        {isLastAssistant && (
+                          <span className="inline-block w-1.5 h-4 ml-1 bg-blue-500 animate-pulse align-middle" />
+                        )}
+                      </div>
+                    )}
 
-          {loading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
-            <div className="flex items-center gap-3 py-2">
-              <div className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce" />
+                    {/* Citations List */}
+                    {!isUser &&
+                      showCitations &&
+                      m.citations &&
+                      m.citations.length > 0 && (
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap gap-1.5 items-center">
+                          <span className="text-[11px] font-semibold text-slate-400 mr-1 flex items-center gap-1">
+                            <Sparkles className="w-3 h-3 text-blue-500" />
+                            Sources:
+                          </span>
+                          {m.citations.map((c) => {
+                            const isSelected = activeCitation?.index === c.index;
+                            const labelParts = [c.file_name || c.title || (c.is_web ? "Web" : "Doc")];
+                            if (c.page_number != null) labelParts.push(`p.${c.page_number}`);
+                            else if (c.section) labelParts.push(`§ ${c.section}`);
+
+                            return (
+                              <button
+                                key={c.index}
+                                type="button"
+                                onClick={() => setActiveCitation(c)}
+                                className={`px-2 py-0.5 rounded text-xs font-mono transition-all flex items-center gap-1 border ${
+                                  isSelected
+                                    ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                                    : c.is_web
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                                    : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300"
+                                }`}
+                              >
+                                {c.is_web ? <Globe className="w-2.5 h-2.5 text-emerald-600" /> : null}
+                                <span className="font-bold text-[10px]">[{c.index}]</span>
+                                <span className="max-w-[140px] truncate">{labelParts.join(" ")}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                  </div>
+
+                  {!isUser && !isLastAssistant && (
+                    <MessageActions className="px-1 pt-0.5">
+                      <MessageAction tooltip="Copy response">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-slate-400 hover:text-slate-700"
+                          aria-label="Copy response"
+                          onClick={() => {
+                            navigator.clipboard?.writeText(m.text);
+                            setCopiedIdx(idx);
+                            setTimeout(() => setCopiedIdx(null), 1500);
+                          }}
+                        >
+                          {copiedIdx === idx ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </Button>
+                      </MessageAction>
+                      {(m.input_tokens != null || m.output_tokens != null) && (
+                        <span className="text-[10px] font-mono text-slate-400">
+                          {m.input_tokens ?? 0} in · {m.output_tokens ?? 0} out tokens
+                        </span>
+                      )}
+                    </MessageActions>
+                  )}
+                </Message>
+              );
+            })}
+
+            {loading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
+              <div className="flex items-center gap-2.5 py-2">
+                <Loader variant="typing" size="sm" />
+                <span className="text-xs text-slate-400">{statusText || "Thinking…"}</span>
               </div>
-              <span className="text-xs text-slate-400">{statusText || "Thinking…"}</span>
-            </div>
-          )}
+            )}
+
+            <ChatContainerScrollAnchor />
+          </ChatContainerContent>
+
+          <div className="pointer-events-none sticky bottom-3 left-0 right-0 flex justify-center z-10">
+            <ScrollButton className="pointer-events-auto shadow-md bg-white hover:bg-slate-50 border-slate-200 text-slate-700" />
           </div>
-        </main>
+        </ChatContainerRoot>
 
         {/* Input Bar */}
-        <footer className="p-4 border-t bg-white">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              send();
-            }}
-            className="flex gap-2 max-w-3xl mx-auto"
-          >
-            <input
-              className="flex-1 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50/50"
+        <footer className="p-3 sm:p-4 border-t bg-white">
+          <div className="max-w-3xl mx-auto">
+            <PromptInput
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={
-                !activeWorkspace
-                  ? "Ask a question..."
-                  : activeChat?.use_local_knowledge
-                  ? `Ask in "${activeChat.title || "chat"}"...`
-                  : "Chat freely (Local KB off)..."
-              }
+              onValueChange={setInput}
+              isLoading={loading}
               disabled={loading || !activeWorkspace || !activeChat}
-            />
-            <button
-              type="button"
-              onClick={() => {
-                setIsUploadOpen(true);
-                setUploadMinimized(false);
+              onSubmit={() => {
+                if (!loading && input.trim() && activeWorkspace && activeChat) {
+                  send();
+                }
               }}
-              disabled={!activeWorkspace}
-              title="Upload documents"
-              aria-label="Upload documents"
-              className="px-3 py-2.5 border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+              className="border-slate-200 bg-slate-50/50 focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent"
             >
-              <Paperclip className="w-4 h-4" />
-            </button>
-            <button
-              type="submit"
-              disabled={loading || !input.trim() || !activeWorkspace || !activeChat}
-              className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5 shadow-sm"
-            >
-              <Send className="w-4 h-4" />
-              <span className="hidden sm:inline">Ask</span>
-            </button>
-          </form>
+              <PromptInputTextarea
+                placeholder={
+                  !activeWorkspace
+                    ? "Ask a question..."
+                    : activeChat?.use_local_knowledge
+                    ? `Ask in "${activeChat.title || "chat"}"...`
+                    : "Chat freely (Local KB off)..."
+                }
+                className="text-sm text-slate-800 placeholder:text-slate-400"
+              />
+              <PromptInputActions className="justify-between pt-2">
+                <PromptInputAction tooltip="Upload documents">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => {
+                      setIsUploadOpen(true);
+                      setUploadMinimized(false);
+                    }}
+                    disabled={!activeWorkspace}
+                    aria-label="Upload documents"
+                    className="h-8 w-8 rounded-full border-slate-200 text-slate-600 hover:bg-slate-100"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </Button>
+                </PromptInputAction>
+
+                <PromptInputAction tooltip={loading ? "Generating response…" : "Send message"}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={loading || !input.trim() || !activeWorkspace || !activeChat}
+                    onClick={() => send()}
+                    className="h-8 rounded-full px-3.5 bg-blue-600 text-white hover:bg-blue-700"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Ask</span>
+                  </Button>
+                </PromptInputAction>
+              </PromptInputActions>
+            </PromptInput>
+          </div>
         </footer>
       </div>
 
