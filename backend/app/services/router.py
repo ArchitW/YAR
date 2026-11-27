@@ -16,15 +16,135 @@ built-in heuristics. This keeps a missing router server from ever breaking chat.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
 
-from ..core.config import router_settings
+from ..core.config import router_settings, searxng_settings
 
 logger = logging.getLogger(__name__)
 
 ROUTES = ("local_kb", "web_search", "general_chat")
+
+_DOC_ANCHOR_RE = re.compile(
+    r"\b("
+    r"this (book|doc|document|file|pdf|epub|paper|article|text|note|notes|chapter|section)|"
+    r"the (book|doc|document|file|pdf|epub|paper|article|author|chapter|section|uploaded)|"
+    r"my (docs|documents|files|notes|uploads|knowledge base|kb)|"
+    r"in the (text|context|sources|documents|files)|"
+    r"according to|summarize|from my files|who is this author|what is this book"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_CAPABILITY_RE = re.compile(
+    r"^(are you able to|can you|do you|how do you|what can you|who are you)\b"
+    r"|^(hi|hello|hey|thanks|thank you)[!.,\s]*$",
+    re.IGNORECASE,
+)
+
+_WEB_INTENT_RE = re.compile(
+    r"\b(search the web|search online|search the internet|look up online|latest news|current weather|today'?s)\b",
+    re.IGNORECASE,
+)
+
+_ROUTE_PROTOTYPES: dict[str, list[str]] = {
+    "local_kb": [
+        "Summarize the uploaded document or book",
+        "What does this file say about the main topic?",
+        "Who is the author of this book and what are its chapters?",
+        "Find details in my workspace notes and indexed PDFs",
+    ],
+    "general_chat": [
+        "What is the capital of France?",
+        "Who is Will Smith?",
+        "Explain how photosynthesis works in simple terms",
+        "Write a Python function to reverse a string",
+        "Are you able to help me with general questions?",
+    ],
+    "web_search": [
+        "Search the web for the latest AI news today",
+        "What is the current weather in Tokyo right now?",
+        "Look up recent stock prices online",
+    ],
+}
+
+_PROTO_VECTORS: dict[str, list[list[float]]] | None = None
+
+
+def _dot(a: list[float], b: list[float]) -> float:
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _get_prototype_vectors() -> dict[str, list[list[float]]] | None:
+    global _PROTO_VECTORS
+    if _PROTO_VECTORS is not None:
+        return _PROTO_VECTORS
+    try:
+        from .embeddings import embed
+
+        flat_texts: list[str] = []
+        slices: list[tuple[str, int, int]] = []
+        for route_name, utterances in _ROUTE_PROTOTYPES.items():
+            start = len(flat_texts)
+            flat_texts.extend(utterances)
+            slices.append((route_name, start, len(flat_texts)))
+        vecs = embed(flat_texts)
+        _PROTO_VECTORS = {
+            name: vecs[start:end] for name, start, end in slices
+        }
+        return _PROTO_VECTORS
+    except Exception:
+        logger.debug("Semantic prototype embedding unavailable", exc_info=True)
+        return None
+
+
+def classify_query(query: str) -> dict[str, Any]:
+    """In-process low-latency query classifier (rules + BGE-M3 semantic routing).
+
+    Used when the external decision router is disabled or unreachable.
+    Returns ``{"route": str, "confidence": float, "source": str}``.
+    """
+    text = (query or "").strip()
+    if not text:
+        return {"route": "general_chat", "confidence": 1.0, "source": "heuristic"}
+
+    if _DOC_ANCHOR_RE.search(text):
+        return {"route": "local_kb", "confidence": 0.95, "source": "heuristic"}
+
+    if _CAPABILITY_RE.search(text):
+        return {"route": "general_chat", "confidence": 0.9, "source": "heuristic"}
+
+    if _WEB_INTENT_RE.search(text):
+        target = "web_search" if searxng_settings().get("enabled") else "general_chat"
+        return {"route": target, "confidence": 0.9, "source": "heuristic"}
+
+    protos = _get_prototype_vectors()
+    if protos is not None:
+        try:
+            from .embeddings import embed
+
+            q_vec = embed([text])[0]
+            scores = {
+                name: max(_dot(q_vec, p_vec) for p_vec in p_vecs)
+                for name, p_vecs in protos.items()
+            }
+            best_route = max(scores, key=lambda k: scores[k])
+            best_score = scores[best_route]
+            sorted_scores = sorted(scores.values(), reverse=True)
+            margin = best_score - (sorted_scores[1] if len(sorted_scores) > 1 else 0.0)
+            if best_route == "web_search" and not searxng_settings().get("enabled"):
+                best_route = "general_chat"
+            if best_route == "general_chat" and best_score >= 0.45 and margin >= 0.02:
+                return {"route": "general_chat", "confidence": round(best_score, 3), "source": "semantic"}
+            if best_route == "web_search" and best_score >= 0.50 and margin >= 0.03:
+                return {"route": "web_search", "confidence": round(best_score, 3), "source": "semantic"}
+            return {"route": "local_kb", "confidence": round(best_score, 3), "source": "semantic"}
+        except Exception:
+            logger.debug("Semantic query classification failed", exc_info=True)
+
+    return {"route": "local_kb", "confidence": 0.5, "source": "fallback"}
 
 _QUESTION_INSTRUCTIONS = (
     "How should this query be answered? "

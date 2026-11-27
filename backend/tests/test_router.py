@@ -99,3 +99,45 @@ def test_router_unknown_route_is_ignored(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert result["route"] is None
     assert result["source"] == "unavailable"
+
+
+def test_classify_query_doc_anchor_routes_to_local_kb() -> None:
+    res = router_mod.classify_query("who is this author and why he is very famous?")
+    assert res["route"] == "local_kb"
+    assert res["source"] == "heuristic"
+
+
+def test_classify_query_capability_routes_to_general_chat() -> None:
+    res = router_mod.classify_query("are you able to search internet for me?")
+    assert res["route"] == "general_chat"
+    assert res["source"] == "heuristic"
+
+
+def test_classify_query_semantic_routes_general_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_embed(texts: list[str]) -> list[list[float]]:
+        out = []
+        for t in texts:
+            tl = t.lower()
+            if "france" in tl or "smith" in tl or "general" in tl or "python" in tl or "photosynthesis" in tl:
+                out.append([1.0, 0.0, 0.0])
+            elif "weather" in tl or "stock" in tl or "news" in tl:
+                out.append([0.0, 1.0, 0.0])
+            else:
+                out.append([0.0, 0.0, 1.0])
+        return out
+
+    monkeypatch.setattr(router_mod, "_PROTO_VECTORS", None)
+    import app.services.embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod, "embed", _fake_embed)
+
+    res = router_mod.classify_query("what is capital of france?")
+    assert res["route"] == "general_chat"
+    assert res["source"] == "semantic"
+
+
+def test_refusal_suppresses_citations() -> None:
+    from app.services.chat import _is_refusal
+
+    assert _is_refusal("The indexed documents do not appear to cover it.") is True
+    assert _is_refusal("Based on [1], Seneca was a Roman Stoic philosopher.") is False

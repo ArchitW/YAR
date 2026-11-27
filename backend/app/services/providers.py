@@ -7,6 +7,7 @@ URLs are stored in the repository.
 from __future__ import annotations
 
 import json
+import os
 from typing import Iterator, Protocol
 
 import httpx
@@ -40,12 +41,12 @@ class OpenAICompatibleProvider:
         base_url: str,
         model: str,
         api_key: str | None = None,
-        timeout: float = 60.0,
+        timeout: float | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._api_key = api_key
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else float(os.getenv("LLM_TIMEOUT", "180.0"))
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         headers = {"Content-Type": "application/json"}
@@ -77,7 +78,10 @@ class OpenAICompatibleProvider:
             raise ProviderError("provider returned invalid JSON") from exc
 
         try:
-            content = data["choices"][0]["message"]["content"]
+            msg = data["choices"][0]["message"]
+            content = msg.get("content")
+            if not isinstance(content, str) or not content.strip():
+                content = msg.get("reasoning_content")
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(
                 "provider response did not contain choices[0].message.content"
@@ -108,6 +112,8 @@ class OpenAICompatibleProvider:
                     headers=headers,
                 ) as response:
                     response.raise_for_status()
+                    yielded_content = False
+                    reasoning_buf: list[str] = []
                     for line in response.iter_lines():
                         if not line:
                             continue
@@ -121,11 +127,19 @@ class OpenAICompatibleProvider:
                                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                                 content = delta.get("content")
                                 if content:
+                                    yielded_content = True
                                     yield content
+                                elif not yielded_content:
+                                    reasoning = delta.get("reasoning_content")
+                                    if reasoning:
+                                        reasoning_buf.append(reasoning)
                             except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                                 continue
+                    if not yielded_content and reasoning_buf:
+                        yield "".join(reasoning_buf)
         except httpx.HTTPStatusError as exc:
             body = (exc.response.text or "")[:300]
+            logger.warning("Provider HTTP %s: %s", exc.response.status_code, body)
             raise ProviderError(f"provider stream request failed: {exc} — {body}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"provider stream request failed: {exc}") from exc

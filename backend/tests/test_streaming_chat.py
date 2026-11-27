@@ -191,7 +191,7 @@ class TestStreamAnswerQueryService:
         ]
         failing_provider = FakeStreamingProvider(should_fail=True)
 
-        events = list(stream_answer_query(workspace_id=1, message="Hello?", provider=failing_provider))
+        events = list(stream_answer_query(workspace_id=1, message="What is in the guide?", provider=failing_provider))
 
         init = next(e for e in events if e["type"] == "init")
         assert init["type"] == "init"
