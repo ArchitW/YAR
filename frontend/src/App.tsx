@@ -9,9 +9,11 @@ import {
   FileText,
   Files,
   Globe,
-  Layers,
   Loader2,
+  Menu,
+  MessageSquare,
   Minus,
+  MoreHorizontal,
   Paperclip,
   Plus,
   Send,
@@ -66,6 +68,12 @@ export default function App() {
 
   // Backend Terminal Logs Drawer state
   const [isLogsOpen, setIsLogsOpen] = useState(false);
+
+  // Overflow ("More") menu state
+  const [isMoreOpen, setIsMoreOpen] = useState(false);
+
+  // Left sidebar (mobile) state
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // In-chat upload modal state
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -425,215 +433,248 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans">
+      {/* Left Sidebar (ChatGPT/Claude-style navigation + chat list) */}
+      <aside
+        className={`fixed md:static inset-y-0 left-0 z-40 w-64 shrink-0 bg-white border-r flex flex-col h-full transform transition-transform ${
+          isSidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        }`}
+      >
+        <div className="p-3 border-b space-y-2">
+          <div className="flex items-center justify-between">
+            <span
+              className="font-bold text-lg tracking-tight text-slate-800"
+              title="YAR — your workspace knowledge assistant"
+            >
+              YAR
+            </span>
+            <button
+              onClick={() => setIsSidebarOpen(false)}
+              className="md:hidden p-1 rounded text-slate-400 hover:text-slate-700"
+              aria-label="Close menu"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <WorkspaceSelector
+            workspaces={workspaces}
+            activeWorkspace={activeWorkspace}
+            onSelectWorkspace={setActiveWorkspace}
+            onOpenCreateModal={() => setWorkspaceModalMode("create")}
+            onOpenEditModal={() => setWorkspaceModalMode("edit")}
+          />
+          <button
+            onClick={handleNewChat}
+            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 text-sm font-medium flex items-center gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            New chat
+          </button>
+        </div>
+
+        <nav className="flex-1 overflow-y-auto p-2 space-y-0.5">
+          {chats.length === 0 && <p className="px-2 py-3 text-xs text-slate-400">No chats yet.</p>}
+          {chats.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => {
+                setActiveChat(c);
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm text-left ${
+                activeChat?.id === c.id
+                  ? "bg-blue-50 text-blue-700 font-medium"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              <MessageSquare className="w-4 h-4 shrink-0 opacity-70" />
+              <span className="truncate">{c.title || "New chat"}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="p-2 border-t space-y-0.5">
+          <button
+            onClick={() => {
+              setIsDocumentsOpen(!isDocumentsOpen);
+              if (!isDocumentsOpen) {
+                setIsMemoryOpen(false);
+                setActiveCitation(null);
+              }
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm ${
+              isDocumentsOpen ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            <Files className="w-4 h-4" />
+            <span className="flex-1 text-left">Documents</span>
+            <span className="px-1.5 rounded-full bg-slate-100 text-[10px] font-mono text-slate-600">
+              {documents.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => {
+              setIsMemoryOpen(!isMemoryOpen);
+              if (!isMemoryOpen) {
+                setIsDocumentsOpen(false);
+                setActiveCitation(null);
+              }
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm ${
+              isMemoryOpen ? "bg-purple-50 text-purple-700 font-medium" : "text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            <Brain className="w-4 h-4" />
+            <span className="flex-1 text-left">Memory</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setSettingsTab("models");
+              fetchModelsStatus();
+              setIsSidebarOpen(false);
+            }}
+            className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm text-slate-600 hover:bg-slate-100"
+          >
+            <Settings className="w-4 h-4" />
+            <span className="flex-1 text-left">Settings</span>
+          </button>
+
+          {/* More menu: retrieval, citations, logs, about */}
+          <div className="relative">
+            <button
+              onClick={() => setIsMoreOpen((v) => !v)}
+              aria-expanded={isMoreOpen}
+              className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm text-slate-600 hover:bg-slate-100"
+            >
+              <MoreHorizontal className="w-4 h-4" />
+              <span className="flex-1 text-left">More</span>
+            </button>
+            {isMoreOpen && (
+              <div className="absolute left-0 bottom-full mb-1 w-60 bg-white border border-slate-200 rounded-xl shadow-lg z-30 p-1 text-xs text-slate-700">
+                <div className="px-2 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Retrieval mode
+                </div>
+                <select
+                  aria-label="Retrieval Mode"
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as any)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="auto">Auto (Hybrid)</option>
+                  <option value="hybrid">Hybrid</option>
+                  <option value="semantic">Semantic</option>
+                  <option value="keyword">Keyword</option>
+                </select>
+                <div className="my-1 border-t border-slate-100" />
+                <button
+                  onClick={() => {
+                    setShowCitations(!showCitations);
+                    setIsMoreOpen(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50"
+                >
+                  {showCitations ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                  <span>Citations {showCitations ? "On" : "Off"}</span>
+                </button>
+                <button
+                  onClick={() => {
+                    const next = !isLogsOpen;
+                    setIsLogsOpen(next);
+                    if (next) {
+                      setIsDocumentsOpen(false);
+                      setIsMemoryOpen(false);
+                      setActiveCitation(null);
+                    }
+                    setIsMoreOpen(false);
+                    setIsSidebarOpen(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50"
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  <span>Backend logs</span>
+                </button>
+                <div className="my-1 border-t border-slate-100" />
+                <div className="px-2 py-1.5 text-[10px] leading-snug text-slate-400">
+                  YAR · workspace knowledge assistant
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </aside>
+
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <header className="h-14 px-4 border-b bg-white flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-3">
-            <span className="font-bold text-lg text-slate-800 tracking-tight">YAR</span>
-            {/* Workspace Selector */}
-            <WorkspaceSelector
-              workspaces={workspaces}
-              activeWorkspace={activeWorkspace}
-              onSelectWorkspace={setActiveWorkspace}
-              onOpenCreateModal={() => setWorkspaceModalMode("create")}
-              onOpenEditModal={() => setWorkspaceModalMode("edit")}
-            />
+        <header className="h-14 px-4 border-b bg-white flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              onClick={() => setIsSidebarOpen(true)}
+              className="md:hidden p-1.5 rounded-lg border border-slate-200 text-slate-600"
+              aria-label="Open menu"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+            <span className="text-sm font-medium text-slate-700 truncate">
+              {activeChat?.title || "New chat"}
+            </span>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3">
-            {/* LLM Endpoint Status Pill (opens Settings -> Models) */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => updateActiveChat({ use_local_knowledge: !activeChat?.use_local_knowledge })}
+              className={`px-2 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 transition-colors ${
+                activeChat?.use_local_knowledge
+                  ? "bg-blue-50 text-blue-700 border-blue-200"
+                  : "bg-white text-slate-400 border-slate-200 hover:text-slate-600"
+              }`}
+              aria-pressed={!!activeChat?.use_local_knowledge}
+              title="Ground answers in this workspace's documents"
+            >
+              <Files className="w-3 h-3" />
+              <span className="hidden md:inline">Local KB</span>
+            </button>
+            <button
+              onClick={() => updateActiveChat({ save_to_memory: !activeChat?.save_to_memory })}
+              className={`px-2 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 transition-colors ${
+                activeChat?.save_to_memory
+                  ? "bg-purple-50 text-purple-700 border-purple-200"
+                  : "bg-white text-slate-400 border-slate-200 hover:text-slate-600"
+              }`}
+              aria-pressed={!!activeChat?.save_to_memory}
+              title="Save this conversation to cognitive memory"
+            >
+              <Brain className="w-3 h-3" />
+              <span className="hidden md:inline">Memory</span>
+            </button>
+
             <button
               onClick={() => {
                 setSettingsTab("models");
                 fetchModelsStatus();
               }}
-              className="px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-              aria-label="Configure LLM endpoint"
+              className="px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              aria-label="Configure LLM endpoint and open settings"
+              title="LLM endpoint & settings"
             >
               <span
                 className={`w-2 h-2 rounded-full ${
                   modelsStatus?.configured_provider ? "bg-emerald-500" : "bg-amber-500"
                 }`}
               />
-              <span className="max-w-[130px] truncate">
+              <span className="max-w-[120px] truncate hidden sm:inline">
                 {modelsStatus?.configured_model || "Add LLM Endpoint"}
               </span>
-            </button>
-
-            {/* Full Settings Button */}
-            <button
-              onClick={() => setSettingsTab("models")}
-              title="Settings"
-              aria-label="Open settings"
-              className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors"
-            >
-              <Settings className="w-3.5 h-3.5" />
-            </button>
-
-            {/* Cognitive Memory & Living Dossier Drawer Toggle */}
-            <button
-              onClick={() => {
-                setIsMemoryOpen(!isMemoryOpen);
-                if (!isMemoryOpen) {
-                  setIsDocumentsOpen(false);
-                  setActiveCitation(null);
-                }
-              }}
-              className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors ${
-                isMemoryOpen
-                  ? "bg-purple-50 text-purple-700 border-purple-200"
-                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-              }`}
-              aria-label="Toggle memory and dossier panel"
-            >
-              <Brain className="w-3.5 h-3.5 text-purple-600" />
-              <span>Memory</span>
-            </button>
-
-            {/* Documents Drawer Toggle */}
-            <button
-              onClick={() => {
-                setIsDocumentsOpen(!isDocumentsOpen);
-                if (!isDocumentsOpen) {
-                  setIsMemoryOpen(false);
-                  setActiveCitation(null);
-                }
-              }}
-              className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors ${
-                isDocumentsOpen
-                  ? "bg-blue-50 text-blue-700 border-blue-200"
-                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-              }`}
-              aria-label="Toggle documents panel"
-            >
-              <Files className="w-3.5 h-3.5" />
-              <span>Documents</span>
-              <span className="px-1.5 py-0.2 rounded-full bg-slate-100 text-[10px] font-mono text-slate-600">
-                {documents.length}
-              </span>
-            </button>
-
-            {/* Retrieval Mode Selector */}
-            <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-600">
-              <Layers className="w-3.5 h-3.5 text-slate-400" />
-              <select
-                id="mode-select"
-                aria-label="Retrieval Mode"
-                value={mode}
-                onChange={(e) => setMode(e.target.value as any)}
-                className="bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="auto">Auto (Hybrid)</option>
-                <option value="hybrid">Hybrid</option>
-                <option value="semantic">Semantic</option>
-                <option value="keyword">Keyword</option>
-              </select>
-            </div>
-
-            {/* Backend Terminal Logs Toggle */}
-            <button
-              onClick={() => {
-                const next = !isLogsOpen;
-                setIsLogsOpen(next);
-                if (next) {
-                  setIsDocumentsOpen(false);
-                  setIsMemoryOpen(false);
-                  setActiveCitation(null);
-                }
-              }}
-              className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors ${
-                isLogsOpen
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-              }`}
-              aria-label="Toggle backend terminal logs"
-            >
-              <Terminal className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Logs</span>
-            </button>
-
-            {/* Citation Visibility Toggle */}
-            <button
-              onClick={() => setShowCitations(!showCitations)}
-              title={showCitations ? "Hide Citations" : "Show Citations"}
-              className={`p-1.5 rounded border text-xs flex items-center gap-1 ${
-                showCitations
-                  ? "bg-slate-100 text-slate-700 border-slate-300"
-                  : "bg-white text-slate-400 border-slate-200 hover:text-slate-600"
-              }`}
-            >
-              {showCitations ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-              <span className="hidden md:inline">
-                {showCitations ? "Citations On" : "Citations Off"}
-              </span>
+              <Settings className="w-3.5 h-3.5 opacity-60" />
             </button>
           </div>
         </header>
 
-        {/* Chat (conversation) sub-bar: pick a chat, create one, per-chat toggles */}
-        {activeWorkspace && (
-          <div className="h-11 px-4 border-b bg-slate-50/80 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <select
-                aria-label="Active chat"
-                value={activeChat?.id ?? ""}
-                onChange={(e) => {
-                  const found = chats.find((c) => String(c.id) === e.target.value);
-                  if (found) setActiveChat(found);
-                }}
-                className="max-w-[220px] truncate bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                {chats.length === 0 && <option value="">No chats</option>}
-                {chats.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.title || "New chat"}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={handleNewChat}
-                className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 text-xs font-medium flex items-center gap-1"
-                aria-label="New chat"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">New chat</span>
-              </button>
-            </div>
-
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => updateActiveChat({ use_local_knowledge: !activeChat?.use_local_knowledge })}
-                className={`px-2 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 transition-colors ${
-                  activeChat?.use_local_knowledge
-                    ? "bg-blue-50 text-blue-700 border-blue-200"
-                    : "bg-white text-slate-400 border-slate-200 hover:text-slate-600"
-                }`}
-                aria-pressed={!!activeChat?.use_local_knowledge}
-                title="Ground answers in this workspace's documents"
-              >
-                <Files className="w-3 h-3" />
-                <span className="hidden md:inline">Local KB</span>
-              </button>
-              <button
-                onClick={() => updateActiveChat({ save_to_memory: !activeChat?.save_to_memory })}
-                className={`px-2 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 transition-colors ${
-                  activeChat?.save_to_memory
-                    ? "bg-purple-50 text-purple-700 border-purple-200"
-                    : "bg-white text-slate-400 border-slate-200 hover:text-slate-600"
-                }`}
-                aria-pressed={!!activeChat?.save_to_memory}
-                title="Save this conversation to cognitive memory"
-              >
-                <Brain className="w-3 h-3" />
-                <span className="hidden md:inline">Memory</span>
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Message History */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+        <main className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
           {messages.length === 0 && (
             <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
               <BookOpen className="w-12 h-12 stroke-[1.5] mb-3 text-slate-300" />
@@ -654,7 +695,7 @@ export default function App() {
               className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}
             >
               <div
-                className={`max-w-2xl px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed ${
+                className={`max-w-2xl px-4 py-3 rounded-2xl shadow-sm text-base leading-relaxed ${
                   m.role === "user"
                     ? "bg-blue-600 text-white rounded-br-none"
                     : "bg-white border border-slate-200 text-slate-800 rounded-bl-none"
@@ -721,6 +762,7 @@ export default function App() {
               <span>Searching workspace documents & synthesizing response...</span>
             </div>
           )}
+          </div>
         </main>
 
         {/* Input Bar */}
@@ -730,7 +772,7 @@ export default function App() {
               e.preventDefault();
               send();
             }}
-            className="flex gap-2 max-w-4xl mx-auto"
+            className="flex gap-2 max-w-3xl mx-auto"
           >
             <input
               className="flex-1 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50/50"
