@@ -4,6 +4,7 @@ import { UploadCloud, CheckCircle2, AlertCircle, Loader2, FileText } from "lucid
 interface DocumentDropzoneProps {
   workspaceId: number;
   onUploadSuccess: () => void;
+  indexToMaster?: boolean;
 }
 
 type StageKey = "upload" | "extract" | "sanitize" | "chunk" | "vectorize";
@@ -39,6 +40,7 @@ function formatBytes(bytes: number): string {
 export default function DocumentDropzone({
   workspaceId,
   onUploadSuccess,
+  indexToMaster = false,
 }: DocumentDropzoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [jobs, setJobs] = useState<FileJob[]>([]);
@@ -82,7 +84,7 @@ export default function DocumentDropzone({
 
     try {
       const res = await fetch(
-        `http://localhost:8000/documents/upload/stream?workspace_id=${workspaceId}`,
+        `http://localhost:8000/documents/upload/stream?workspace_id=${workspaceId}&index_to_master=${indexToMaster}`,
         { method: "POST", body: formData }
       );
 

@@ -5,9 +5,19 @@ export interface Workspace {
   created_at?: string;
 }
 
+export interface Chat {
+  id: number;
+  workspace_id: number;
+  title: string;
+  use_local_knowledge: boolean;
+  save_to_memory: boolean;
+  created_at?: string;
+}
+
 export interface DocumentItem {
   id: number;
   workspace_id: number;
+  is_master?: boolean;
   name: string;
   source_type?: string;
   file_type?: string;
