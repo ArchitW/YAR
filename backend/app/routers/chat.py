@@ -1,6 +1,8 @@
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -8,7 +10,7 @@ from ..core.database import get_db
 from ..core.middleware import get_request_trace_id
 from ..models.chat import ChatMessage
 from ..services.audit import AuditService
-from ..services.chat import answer_query
+from ..services.chat import answer_query, stream_answer_query
 from ..services.export import ExportService
 from ..services.memory import MemoryService
 
@@ -27,6 +29,42 @@ class ChatResponse(BaseModel):
     provider: str
     model: str
     degraded: bool = False
+    faithfulness_score: float | None = None
+    hallucination_detected: bool = False
+
+
+class ModelsResponse(BaseModel):
+    configured_provider: str | None = None
+    configured_model: str | None = None
+    ollama_online: bool = False
+    local_models: list[str] = Field(default_factory=list)
+
+
+@router.get("/models", response_model=ModelsResponse)
+def list_available_models() -> ModelsResponse:
+    """List configured provider and autodiscovered local Ollama models (TKT-023)."""
+    from ..core.config import llm_settings, ollama_settings
+    from ..services.providers import OllamaProvider, get_provider
+
+    llm_cfg = llm_settings()
+    o_cfg = ollama_settings()
+
+    active_provider = get_provider()
+    local_models = OllamaProvider.discover_models(
+        base_url=o_cfg["base_url"],
+        timeout=float(o_cfg["timeout"]),
+    )
+    is_online = OllamaProvider.is_online(
+        base_url=o_cfg["base_url"],
+        timeout=float(o_cfg["timeout"]),
+    )
+
+    return ModelsResponse(
+        configured_provider=active_provider.name if active_provider else None,
+        configured_model=active_provider.model if active_provider else (llm_cfg.get("model") or None),
+        ollama_online=is_online,
+        local_models=local_models,
+    )
 
 
 @router.post("", response_model=ChatResponse)
@@ -78,7 +116,7 @@ def chat(
         db=db,
         event_type="chat.query",
         summary=f"Processed query in workspace {req.workspace_id}",
-        status="warning" if result.get("degraded") else "success",
+        status="warning" if result.get("degraded") or result.get("hallucination_detected") else "success",
         trace_id=trace_id,
         workspace_id=req.workspace_id,
         metadata={
@@ -86,12 +124,104 @@ def chat(
             "model": result.get("model"),
             "citations_count": len(result.get("citations", [])),
             "degraded": result.get("degraded", False),
+            "faithfulness_score": result.get("faithfulness_score"),
+            "hallucination_detected": result.get("hallucination_detected", False),
+            "unsupported_claims": result.get("unsupported_claims", []),
         },
     )
 
     db.commit()
 
     return ChatResponse(**result)
+
+
+@router.post("/stream")
+def chat_stream(
+    req: ChatRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    trace_id = get_request_trace_id(request)
+
+    # 1. Persist user message to chat history immediately
+    user_msg = ChatMessage(
+        workspace_id=req.workspace_id,
+        role="user",
+        content=req.message,
+    )
+    db.add(user_msg)
+
+    # 2. Record interaction in cognitive memory stream
+    try:
+        MemoryService.record_interaction(db, req.workspace_id, "user", req.message)
+    except Exception:
+        pass
+
+    db.commit()
+
+    def event_generator():
+        final_result = None
+        try:
+            for event in stream_answer_query(req.workspace_id, req.message, req.mode, db=db):
+                if event.get("type") == "done":
+                    final_result = event
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as exc:
+            err_event = {
+                "type": "error",
+                "error": str(exc),
+            }
+            yield f"data: {json.dumps(err_event)}\n\n"
+
+        # 3. Persist assistant message and audit log upon stream completion
+        if final_result:
+            try:
+                assistant_msg = ChatMessage(
+                    workspace_id=req.workspace_id,
+                    role="assistant",
+                    content=final_result.get("answer", ""),
+                    citations=final_result.get("citations", []),
+                    provider=final_result.get("provider", "unknown"),
+                    model=final_result.get("model", "unknown"),
+                    degraded=final_result.get("degraded", False),
+                )
+                db.add(assistant_msg)
+                try:
+                    MemoryService.record_interaction(db, req.workspace_id, "assistant", final_result.get("answer", ""))
+                except Exception:
+                    pass
+
+                AuditService.record(
+                    db=db,
+                    event_type="chat.query",
+                    summary=f"Processed streaming query in workspace {req.workspace_id}",
+                    status="warning" if final_result.get("degraded") or final_result.get("hallucination_detected") else "success",
+                    trace_id=trace_id,
+                    workspace_id=req.workspace_id,
+                    metadata={
+                        "provider": final_result.get("provider"),
+                        "model": final_result.get("model"),
+                        "citations_count": len(final_result.get("citations", [])),
+                        "degraded": final_result.get("degraded", False),
+                        "faithfulness_score": final_result.get("faithfulness_score"),
+                        "hallucination_detected": final_result.get("hallucination_detected", False),
+                        "unsupported_claims": final_result.get("unsupported_claims", []),
+                        "streaming": True,
+                    },
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 class HistoryItem(BaseModel):

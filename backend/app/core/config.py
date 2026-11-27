@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -34,3 +35,29 @@ def jwt_secret() -> str:
             raise RuntimeError("JWT_SECRET environment variable is required when AUTH_ENABLED=true")
         return "yar-dev-secret-auth-disabled"
     return secret
+
+
+def query_rewriter_settings() -> dict[str, bool]:
+    """Settings for conversational query rewriting and HyDE expansion."""
+    return {
+        "rewrite_enabled": os.getenv("QUERY_REWRITE_ENABLED", "true").strip().lower() in ("true", "1", "yes"),
+        "hyde_enabled": os.getenv("HYDE_ENABLED", "false").strip().lower() in ("true", "1", "yes"),
+    }
+
+
+def searxng_settings() -> dict[str, Any]:
+    """Settings for SearXNG metasearch and autonomous web tool fallback."""
+    return {
+        "base_url": os.getenv("SEARXNG_BASE_URL", "").rstrip("/"),
+        "enabled": os.getenv("WEB_SEARCH_ENABLED", "true").strip().lower() in ("true", "1", "yes"),
+        "confidence_threshold": float(os.getenv("WEB_SEARCH_CONFIDENCE_THRESHOLD", "0.25")),
+    }
+
+
+def ollama_settings() -> dict[str, Any]:
+    """Settings for native Ollama local model integration and autodiscovery (TKT-023)."""
+    return {
+        "base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/"),
+        "autodiscover": os.getenv("OLLAMA_AUTODISCOVER", "true").strip().lower() in ("true", "1", "yes"),
+        "timeout": float(os.getenv("OLLAMA_TIMEOUT", "3.0")),
+    }

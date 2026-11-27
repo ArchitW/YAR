@@ -9,6 +9,7 @@ from ..core.database import get_db
 from ..core.middleware import get_request_trace_id
 from ..models.connector import Connector
 from ..services.connectors.filesystem import FilesystemConnectorService
+from ..services.connectors.searxng import SearXNGConnectorService
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
 
@@ -80,6 +81,8 @@ def sync_connector(
 
     if conn.type == "filesystem":
         return FilesystemConnectorService.sync_connector(db, conn, trace_id=trace_id)
+    elif conn.type == "searxng":
+        return SearXNGConnectorService.sync_connector(db, conn, trace_id=trace_id)
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

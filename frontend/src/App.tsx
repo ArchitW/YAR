@@ -3,10 +3,12 @@ import {
   AlertCircle,
   BookOpen,
   Brain,
+  ExternalLink,
   Eye,
   EyeOff,
   FileText,
   Files,
+  Globe,
   Layers,
   Send,
   Sparkles,
@@ -18,6 +20,7 @@ import WorkspaceModal from "./components/WorkspaceModal";
 import DocumentDropzone from "./components/DocumentDropzone";
 import DocumentList from "./components/DocumentList";
 import MemoryInspector from "./components/MemoryInspector";
+import CitationInspector from "./components/CitationInspector";
 
 const API_BASE = "http://localhost:8000";
 
@@ -172,7 +175,7 @@ export default function App() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/chat`, {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -182,28 +185,136 @@ export default function App() {
         }),
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Fallback to unary /chat if stream endpoint fails
+        const unaryRes = await fetch(`${API_BASE}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workspace_id: activeWorkspace.id,
+            message: userQuery,
+            mode,
+          }),
+        });
+        if (!unaryRes.ok) throw new Error(`HTTP ${unaryRes.status}`);
+        const data = await unaryRes.json();
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            text: data.answer,
+            citations: data.citations || [],
+            provider: data.provider,
+            model: data.model,
+            degraded: data.degraded,
+          },
+        ]);
+        return;
+      }
 
-      const data = await res.json();
+      if (!res.body) throw new Error("No readable stream in response");
+
+      // Append initial assistant placeholder
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: data.answer,
-          citations: data.citations || [],
-          provider: data.provider,
-          model: data.model,
-          degraded: data.degraded,
+          text: "",
+          citations: [],
+          provider: "",
+          model: "",
+          degraded: false,
         },
       ]);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (trimmed.startsWith("data: ")) {
+            try {
+              const event = JSON.parse(trimmed.slice(6));
+              if (event.type === "init") {
+                setMessages((prev) => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last && last.role === "assistant") {
+                    next[next.length - 1] = {
+                      ...last,
+                      citations: event.citations || [],
+                      provider: event.provider,
+                      model: event.model,
+                      degraded: event.degraded,
+                    };
+                  }
+                  return next;
+                });
+              } else if (event.type === "token") {
+                setMessages((prev) => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last && last.role === "assistant") {
+                    next[next.length - 1] = {
+                      ...last,
+                      text: last.text + event.token,
+                    };
+                  }
+                  return next;
+                });
+              } else if (event.type === "done") {
+                setMessages((prev) => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last && last.role === "assistant") {
+                    next[next.length - 1] = {
+                      ...last,
+                      text: event.answer || last.text,
+                      citations: event.citations || last.citations,
+                      provider: event.provider || last.provider,
+                      model: event.model || last.model,
+                      degraded: event.degraded ?? last.degraded,
+                    };
+                  }
+                  return next;
+                });
+              }
+            } catch {
+              // Ignore partial JSON parse errors
+            }
+          }
+        }
+      }
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          text: "Error contacting backend service. Please ensure the API is running.",
-        },
-      ]);
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last && last.role === "assistant" && !last.text) {
+          next[next.length - 1] = {
+            ...last,
+            text: "Error contacting backend service. Please ensure the API is running.",
+          };
+          return next;
+        } else if (last && last.role === "user") {
+          return [
+            ...next,
+            {
+              role: "assistant",
+              text: "Error contacting backend service. Please ensure the API is running.",
+            },
+          ];
+        }
+        return next;
+      });
     } finally {
       setLoading(false);
     }
@@ -340,7 +451,12 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="whitespace-pre-wrap">{m.text}</div>
+                <div className="whitespace-pre-wrap">
+                  {m.text}
+                  {loading && idx === messages.length - 1 && m.role === "assistant" && (
+                    <span className="inline-block w-1.5 h-4 ml-0.5 bg-blue-500 animate-pulse align-middle" />
+                  )}
+                </div>
 
                 {/* Citations List */}
                 {m.role === "assistant" &&
@@ -354,7 +470,7 @@ export default function App() {
                       </span>
                       {m.citations.map((c) => {
                         const isSelected = activeCitation?.index === c.index;
-                        const labelParts = [c.file_name || "Doc"];
+                        const labelParts = [c.file_name || c.title || (c.is_web ? "Web" : "Doc")];
                         if (c.page_number != null) labelParts.push(`p.${c.page_number}`);
                         else if (c.section) labelParts.push(`§ ${c.section}`);
 
@@ -365,9 +481,12 @@ export default function App() {
                             className={`px-2 py-0.5 rounded text-xs font-mono transition-all flex items-center gap-1 border ${
                               isSelected
                                 ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                                : c.is_web
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
                                 : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300"
                             }`}
                           >
+                            {c.is_web ? <Globe className="w-2.5 h-2.5 text-emerald-600" /> : null}
                             <span className="font-bold text-[10px]">[{c.index}]</span>
                             <span className="max-w-[140px] truncate">{labelParts.join(" ")}</span>
                           </button>
@@ -379,7 +498,7 @@ export default function App() {
             </div>
           ))}
 
-          {loading && (
+          {loading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
             <div className="flex items-center gap-2 text-xs text-slate-400 py-2">
               <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
               <span>Searching workspace documents & synthesizing response...</span>
@@ -468,99 +587,12 @@ export default function App() {
         </aside>
       )}
 
-      {/* Citation Inspector Side Panel */}
-      {activeCitation && (
-        <aside className="w-80 sm:w-96 border-l bg-white flex flex-col h-full shadow-lg z-10 transition-all">
-          <div className="h-14 px-4 border-b flex items-center justify-between bg-slate-50">
-            <div className="flex items-center gap-2">
-              <FileText className="w-4 h-4 text-blue-600" />
-              <h3 className="font-semibold text-sm text-slate-800">
-                Citation [{activeCitation.index}]
-              </h3>
-            </div>
-            <button
-              onClick={() => setActiveCitation(null)}
-              aria-label="Close citation details"
-              className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-200/60"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-            {/* Metadata Card */}
-            <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
-              <div>
-                <span className="text-slate-400 uppercase tracking-wider text-[10px] font-semibold block">
-                  Document
-                </span>
-                <span className="font-medium text-slate-800 text-sm break-all">
-                  {activeCitation.file_name || "Unknown"}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-200/60">
-                {activeCitation.page_number != null && (
-                  <div>
-                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">
-                      Page
-                    </span>
-                    <span className="font-mono text-slate-700 font-medium">
-                      {activeCitation.page_number}
-                    </span>
-                  </div>
-                )}
-
-                {activeCitation.section && (
-                  <div>
-                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">
-                      Section
-                    </span>
-                    <span className="text-slate-700 font-medium break-all">
-                      {activeCitation.section}
-                    </span>
-                  </div>
-                )}
-
-                {activeCitation.chunk_index != null && (
-                  <div>
-                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">
-                      Chunk Index
-                    </span>
-                    <span className="font-mono text-slate-700">
-                      {activeCitation.chunk_index}
-                      {activeCitation.total_chunks ? ` / ${activeCitation.total_chunks}` : ""}
-                    </span>
-                  </div>
-                )}
-
-                {activeCitation.score != null && (
-                  <div>
-                    <span className="text-slate-400 text-[10px] uppercase font-semibold block">
-                      Relevance Score
-                    </span>
-                    <span className="font-mono text-slate-700">
-                      {typeof activeCitation.score === "number"
-                        ? activeCitation.score.toFixed(3)
-                        : activeCitation.score}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Source Content Preview */}
-            <div>
-              <span className="text-slate-400 uppercase tracking-wider text-[10px] font-semibold block mb-1.5">
-                Supporting Text Excerpt
-              </span>
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 leading-relaxed font-sans whitespace-pre-wrap select-text max-h-[400px] overflow-y-auto">
-                {activeCitation.text || activeCitation.chunk_text || "No preview text available"}
-              </div>
-            </div>
-          </div>
-        </aside>
-      )}
+      {/* Citation Inspector Side Panel (Visual PDF Grounding & Split-Screen Canvas - TKT-017) */}
+      <CitationInspector
+        activeCitation={activeCitation}
+        onClose={() => setActiveCitation(null)}
+        apiBase={API_BASE}
+      />
 
       {/* Workspace Create / Edit Modal */}
       <WorkspaceModal

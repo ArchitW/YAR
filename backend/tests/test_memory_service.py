@@ -334,7 +334,7 @@ def test_chat_router_records_memory_and_injects_dossier(client, db):
         assert user_memory is not None
 
         # 4. Verify that prompt sent to LLM included the Active User & Workspace Dossier
-        assert len(captured_prompts) == 1
-        _, user_prompt = captured_prompts[0]
+        assert len(captured_prompts) >= 1
+        _, user_prompt = captured_prompts[-1]
         assert "Active User & Workspace Dossier" in user_prompt
         assert "Always write Python with modern type hints" in user_prompt

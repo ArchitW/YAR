@@ -9,6 +9,8 @@ services:
       DATABASE_URL: postgresql+psycopg://yar:yar@postgres:5432/yar
       REDIS_URL: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
+      SEARXNG_BASE_URL: http://searxng:8080
+      WEB_SEARCH_ENABLED: "true"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')\""]
       interval: 10s
@@ -30,6 +32,8 @@ services:
       DATABASE_URL: postgresql+psycopg://yar:yar@postgres:5432/yar
       REDIS_URL: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
+      SEARXNG_BASE_URL: http://searxng:8080
+      WEB_SEARCH_ENABLED: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,6 +87,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+    profiles:
+      - full
 
 volumes:
   pgdata:

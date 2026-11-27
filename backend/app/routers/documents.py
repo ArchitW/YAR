@@ -5,6 +5,7 @@ import shutil
 import uuid
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -23,8 +24,9 @@ from ..core.middleware import get_request_trace_id
 from ..models.document import Document
 from ..services.audit import AuditService
 from ..services.embeddings import embed, embed_late_chunks, embed_sparse
-from ..services.chunking import adaptive_chunk
-from ..services.extraction import extract_text, is_supported
+from ..services.chunking import adaptive_chunk, hierarchical_chunk
+from ..services.guardrails import PIISanitizer
+from ..services.extraction import extract_pdf_boxes, extract_text, find_chunk_bbox, is_supported
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +76,20 @@ def upload_document(
     except Exception:
         logger.exception("Failed to extract text from %s", file.filename)
         text = ""
+
+    pdf_blocks = []
+    is_pdf = (file.content_type == "application/pdf") or (file.filename and file.filename.lower().endswith(".pdf"))
+    if is_pdf:
+        try:
+            pdf_blocks = extract_pdf_boxes(dest)
+        except Exception:
+            logger.warning("Failed to extract PDF bounding boxes from %s", file.filename, exc_info=True)
+
+    pii_stats = {"total": 0}
     if text:
+        text, pii_stats = PIISanitizer.sanitize(text)
+        if pii_stats["total"] > 0:
+            logger.info("Redacted %d sensitive PII entities from %s before indexing", pii_stats["total"], file.filename)
         status_val = "indexed"
     elif not is_supported(dest, file.content_type):
         status_val = "queued"          # unsupported format, awaiting future parser
@@ -99,18 +114,40 @@ def upload_document(
         status="success" if status_val != "error" else "failure",
         trace_id=trace_id,
         workspace_id=workspace_id,
-        metadata={"filename": file.filename, "size_bytes": size, "status": status_val},
+        metadata={
+            "filename": file.filename,
+            "size_bytes": size,
+            "status": status_val,
+            "redacted_pii_count": pii_stats["total"],
+        },
     )
 
     if text:
         ensure_collection()
-        chunks = adaptive_chunk(text)
+        hier_items = hierarchical_chunk(text)
+        if not hier_items:
+            hier_items = [
+                {
+                    "child_text": c,
+                    "child_index": i,
+                    "parent_id": f"p_{i}",
+                    "parent_index": i,
+                    "parent_text": c,
+                    "section": None,
+                }
+                for i, c in enumerate(adaptive_chunk(text))
+            ]
+
+        chunks = [item["child_text"] for item in hier_items]
         ctx_chunks = [f"Document: {file.filename}\n\n{chunk}" for chunk in chunks]
         dense_vecs = embed_late_chunks(text, ctx_chunks, original_chunks=chunks)
         points = []
-        for i, (chunk, ctx_chunk, dvec) in enumerate(zip(chunks, ctx_chunks, dense_vecs)):
-            meta = parse_chunk_metadata(chunk)
+        for i, (item, ctx_chunk, dvec) in enumerate(zip(hier_items, ctx_chunks, dense_vecs)):
+            meta = parse_chunk_metadata(item["child_text"])
             sp = embed_sparse(ctx_chunk)
+            sec = item.get("section") or meta.get("section")
+            page_num = meta.get("page_number")
+            bbox_info = find_chunk_bbox(item["child_text"], page_num, pdf_blocks) if pdf_blocks else None
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
                 vector={
@@ -121,12 +158,17 @@ def upload_document(
                     "workspace_id": workspace_id,
                     "document_id": doc.id,
                     "file_name": doc.name,
-                    "chunk_index": i,
-                    "total_chunks": len(chunks),
-                    "text": chunk,
+                    "chunk_index": item["child_index"],
+                    "total_chunks": len(hier_items),
+                    "text": item["child_text"],
                     "context": ctx_chunk,
-                    "page_number": meta.get("page_number"),
-                    "section": meta.get("section"),
+                    "parent_id": f"{doc.id}_{item['parent_id']}",
+                    "parent_text": item["parent_text"],
+                    "page_number": page_num,
+                    "section": sec,
+                    "bbox": bbox_info.get("bbox") if bbox_info else None,
+                    "page_width": bbox_info.get("page_width") if bbox_info else None,
+                    "page_height": bbox_info.get("page_height") if bbox_info else None,
                     "timestamp": None,
                 },
             ))
@@ -136,6 +178,31 @@ def upload_document(
 @router.get("")
 def list_documents(workspace_id: int, db: Session = Depends(get_db)):
     return db.query(Document).filter(Document.workspace_id == workspace_id).all()
+
+
+@router.get("/{document_id}/file")
+def get_document_file(
+    document_id: int,
+    db: Session = Depends(get_db),
+):
+    """Serve original document file for visual PDF viewing with range request support (TKT-017)."""
+    doc = db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document {document_id} not found",
+        )
+    file_path = os.path.join(UPLOAD_DIR, doc.name)
+    if not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File for document {document_id} not found on disk",
+        )
+    return FileResponse(
+        file_path,
+        media_type=doc.file_type or "application/pdf",
+        filename=doc.name,
+    )
 
 
 @router.delete("/{document_id}")

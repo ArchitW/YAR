@@ -8,6 +8,7 @@ from .models.connector import Connector
 from .models.document import Document
 from .services.audit import AuditService
 from .services.connectors.filesystem import FilesystemConnectorService
+from .services.connectors.searxng import SearXNGConnectorService
 from .services.dreaming.nrem import NREMConsolidator
 from .services.dreaming.rem import REMDreamer
 
@@ -39,6 +40,8 @@ def sync_connector_task(self, connector_id: int, workspace_id: int) -> dict[str,
 
         if conn.type == "filesystem":
             return FilesystemConnectorService.sync_connector(db, conn)
+        elif conn.type == "searxng":
+            return SearXNGConnectorService.sync_connector(db, conn)
         return {"status": "error", "message": f"Unsupported connector type {conn.type}"}
     except Exception as ex:
         logger.exception("Failed to run sync_connector_task for %d: %s", connector_id, ex)

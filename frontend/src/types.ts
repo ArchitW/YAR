@@ -31,6 +31,12 @@ export interface Citation {
   score?: number;
   is_dream?: boolean;
   dream_title?: string;
+  is_web?: boolean;
+  url?: string;
+  title?: string;
+  bbox?: [number, number, number, number] | null;
+  page_width?: number | null;
+  page_height?: number | null;
 }
 
 export interface Message {
