@@ -167,6 +167,23 @@ def test_model_connection(req: ModelTestRequest) -> ModelTestResponse:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     t0 = time.monotonic()
     models_url = f"{base_url}/models"
+
+    def _server_message(r) -> str:
+        """Extract a short human-readable error message from a response body."""
+        try:
+            data = r.json()
+            if isinstance(data, dict):
+                err = data.get("error")
+                if isinstance(err, dict) and err.get("message"):
+                    return str(err["message"])[:200]
+                if isinstance(err, str):
+                    return err[:200]
+                if data.get("message"):
+                    return str(data["message"])[:200]
+        except Exception:
+            pass
+        return (getattr(r, "text", "") or "")[:200].strip()
+
     logger.info("Testing LLM connection: GET %s (model=%s)", models_url, req.model.strip() or "<unset>")
     try:
         with httpx.Client(timeout=min(max(req.timeout, 1.0), 15.0)) as client:
@@ -218,20 +235,23 @@ def test_model_connection(req: ModelTestRequest) -> ModelTestResponse:
                         detail=f"Connected via /chat/completions ({latency_ms} ms) · model '{req.model.strip()}' ready",
                     )
                 logger.warning("POST %s returned HTTP %s: %s", chat_url, chat_resp.status_code, chat_resp.text[:200])
-                return ModelTestResponse(
-                    ok=False,
-                    latency_ms=latency_ms,
-                    detail=f"Endpoint reachable, but returned HTTP {chat_resp.status_code}"
-                    + (" (check your API key)" if chat_resp.status_code in (401, 403) else ""),
-                )
+                server_msg = _server_message(chat_resp)
+                detail = f"Endpoint reachable, but returned HTTP {chat_resp.status_code}"
+                if chat_resp.status_code in (401, 403):
+                    detail += " — authentication failed. Enter the API key for this endpoint."
+                if server_msg:
+                    detail += f" ({server_msg})"
+                return ModelTestResponse(ok=False, latency_ms=latency_ms, detail=detail)
 
-            return ModelTestResponse(
-                ok=False,
-                latency_ms=latency_ms,
-                detail=f"Endpoint reachable, but GET /models returned HTTP {resp.status_code}. "
-                + ("Enter a Model Name (and API key if required) to test /chat/completions."
-                   if resp.status_code in (401, 403, 404, 405) else ""),
-            )
+            server_msg = _server_message(resp)
+            detail = f"Endpoint reachable, but GET /models returned HTTP {resp.status_code}."
+            if resp.status_code in (401, 403):
+                detail += " Authentication required — enter the API key for this endpoint."
+            else:
+                detail += " Enter a Model Name (and API key if required) to test /chat/completions."
+            if server_msg:
+                detail += f" ({server_msg})"
+            return ModelTestResponse(ok=False, latency_ms=latency_ms, detail=detail)
     except Exception as ex:
         latency_ms = int((time.monotonic() - t0) * 1000)
         logger.exception("LLM connection test error for %s: %s", models_url, ex)
