@@ -19,6 +19,34 @@ from .models import connector as _connector_model  # noqa: F401 — register Con
 
 Base.metadata.create_all(bind=engine)
 
+
+def ensure_schema() -> None:
+    """Idempotently add columns introduced after the initial schema.
+
+    create_all() creates missing tables but never alters existing ones, so we
+    add new columns here for deployments on an older database file.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    def add_column(table: str, column: str, ddl_type: str, default: str | None = None) -> None:
+        if table not in existing_tables:
+            return
+        cols = {c["name"] for c in inspector.get_columns(table)}
+        if column in cols:
+            return
+        default_clause = f" DEFAULT {default}" if default is not None else ""
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}{default_clause}"))
+
+    add_column("chat_messages", "chat_id", "INTEGER")
+    add_column("documents", "is_master", "BOOLEAN", default="0")
+
+
+ensure_schema()
+
 app = FastAPI(title="YAR")
 
 app.add_middleware(TraceIDMiddleware)
