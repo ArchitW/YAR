@@ -376,8 +376,17 @@ def upload_document_stream(
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 @router.get("")
-def list_documents(workspace_id: int, db: Session = Depends(get_db)):
-    return db.query(Document).filter(Document.workspace_id == workspace_id).all()
+def list_documents(
+    workspace_id: int | None = None,
+    master: bool = False,
+    db: Session = Depends(get_db),
+):
+    q = db.query(Document)
+    if master:
+        q = q.filter(Document.is_master.is_(True))
+    elif workspace_id is not None:
+        q = q.filter(Document.workspace_id == workspace_id)
+    return q.order_by(Document.id.desc()).all()
 
 
 @router.get("/{document_id}/file")

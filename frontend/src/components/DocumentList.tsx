@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FileText, RefreshCw, Eye, X, CheckCircle, Clock, AlertTriangle } from "lucide-react";
+import { FileText, RefreshCw, Eye, X, CheckCircle, Clock, AlertTriangle, Trash2 } from "lucide-react";
 import { DocumentItem } from "../types";
 
 interface DocumentListProps {
@@ -7,6 +7,7 @@ interface DocumentListProps {
   isLoading: boolean;
   onRefresh: () => void;
   workspaceName: string;
+  onDelete?: (doc: DocumentItem) => void;
 }
 
 export default function DocumentList({
@@ -14,6 +15,7 @@ export default function DocumentList({
   isLoading,
   onRefresh,
   workspaceName,
+  onDelete,
 }: DocumentListProps) {
   const [selectedDoc, setSelectedDoc] = useState<DocumentItem | null>(null);
 
@@ -108,6 +110,17 @@ export default function DocumentList({
                     className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
                   >
                     <Eye className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={() => onDelete(doc)}
+                    aria-label={`Delete ${doc.name}`}
+                    title="Delete document"
+                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>

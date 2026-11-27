@@ -757,9 +757,13 @@ export default function App() {
           ))}
 
           {loading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
-            <div className="flex items-center gap-2 text-xs text-slate-400 py-2">
-              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-              <span>Searching workspace documents & synthesizing response...</span>
+            <div className="flex items-center gap-3 py-2">
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.3s]" />
+                <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.15s]" />
+                <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce" />
+              </div>
+              <span className="text-xs text-slate-400">Thinking…</span>
             </div>
           )}
           </div>

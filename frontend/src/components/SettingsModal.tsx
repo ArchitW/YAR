@@ -7,6 +7,7 @@ import {
   Cpu,
   Eye,
   EyeOff,
+  Files,
   Globe,
   HardDrive,
   Loader2,
@@ -17,8 +18,10 @@ import {
   X,
 } from "lucide-react";
 import { ModelsStatus } from "./ModelSettingsPanel";
+import DocumentList from "./DocumentList";
+import { DocumentItem } from "../types";
 
-export type SettingsTab = "models" | "retrieval" | "memory" | "security" | "system";
+export type SettingsTab = "models" | "retrieval" | "memory" | "security" | "system" | "master";
 
 interface FullSettings {
   llm_base_url: string;
@@ -96,6 +99,7 @@ const PROVIDERS = [
 
 const TABS: { id: SettingsTab; label: string; icon: any }[] = [
   { id: "models", label: "Models & Providers", icon: Cpu },
+  { id: "master", label: "Master Knowledge", icon: Files },
   { id: "retrieval", label: "Retrieval & Search", icon: Globe },
   { id: "memory", label: "Memory & Dreaming", icon: Brain },
   { id: "security", label: "Security & Audit", icon: Shield },
@@ -160,6 +164,35 @@ export default function SettingsModal({
   const [dreaming, setDreaming] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditItem[]>([]);
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [masterDocs, setMasterDocs] = useState<DocumentItem[]>([]);
+  const [masterLoading, setMasterLoading] = useState(false);
+
+  const loadMasterDocs = useCallback(async () => {
+    setMasterLoading(true);
+    try {
+      const res = await fetch(`${apiBase}/documents?master=true`);
+      if (res.ok) setMasterDocs(await res.json());
+      else setMasterDocs([]);
+    } catch {
+      setMasterDocs([]);
+    } finally {
+      setMasterLoading(false);
+    }
+  }, [apiBase]);
+
+  const deleteMasterDoc = async (doc: DocumentItem) => {
+    try {
+      await fetch(`${apiBase}/documents/${doc.id}`, { method: "DELETE" });
+      setMasterDocs((prev) => prev.filter((d) => d.id !== doc.id));
+      setFeedback({ type: "success", message: `Removed "${doc.name}" from the Master Knowledge Base.` });
+    } catch {
+      setFeedback({ type: "error", message: `Failed to delete "${doc.name}".` });
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen && activeTab === "master") loadMasterDocs();
+  }, [isOpen, activeTab, loadMasterDocs]);
 
   useEffect(() => {
     if (isOpen) {
@@ -319,8 +352,8 @@ export default function SettingsModal({
   const allSuggestions = Array.from(new Set([...(modelsStatus?.local_models || []), ...discoveredModels]));
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl h-[82vh] flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-50 bg-white flex items-stretch justify-center">
+      <div className="w-full max-w-6xl h-full flex flex-col overflow-hidden border-x border-slate-200">
         {/* Modal Header */}
         <div className="h-14 px-5 border-b flex items-center justify-between bg-slate-50/80 shrink-0">
           <div className="flex items-center gap-2.5">
@@ -583,6 +616,40 @@ export default function SettingsModal({
                 )}
 
                 {/* TAB 2: RETRIEVAL & WEB SEARCH */}
+                {/* TAB: MASTER KNOWLEDGE */}
+                {activeTab === "master" && (
+                  <div className="space-y-4">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-800">Master Knowledge Base</h3>
+                      <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                        Documents here are shared across <span className="font-medium">every</span> workspace.
+                        Upload with “Also add to Master Knowledge Base” checked, or manage the shared set below.
+                      </p>
+                    </div>
+
+                    <div className="p-4 rounded-xl border border-blue-100 bg-blue-50/40 flex items-start gap-3">
+                      <Files className="w-5 h-5 text-blue-600 shrink-0" />
+                      <div className="text-xs text-slate-600">
+                        <div className="font-medium text-slate-800">
+                          {masterDocs.length} master document(s)
+                        </div>
+                        <div className="mt-0.5">
+                          Searchable from any workspace, in addition to that workspace’s own files.
+                        </div>
+                      </div>
+                    </div>
+
+                    <DocumentList
+                      documents={masterDocs}
+                      isLoading={masterLoading}
+                      onRefresh={loadMasterDocs}
+                      workspaceName="Master Knowledge Base"
+                      onDelete={deleteMasterDoc}
+                    />
+                  </div>
+                )}
+
+                {/* TAB 2: RETRIEVAL */}
                 {activeTab === "retrieval" && (
                   <div className="space-y-5">
                     <div>

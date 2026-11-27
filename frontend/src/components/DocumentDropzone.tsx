@@ -247,6 +247,39 @@ export default function DocumentDropzone({
             )}
           </div>
 
+          {jobs.some((j) => j.currentStage !== "complete" && j.currentStage !== "error") && (
+            <div className="p-3 rounded-xl border border-blue-200 bg-blue-50/60">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2 text-xs font-medium text-blue-800">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>
+                    Indexing{" "}
+                    {jobs.filter((j) => j.currentStage === "complete" || j.currentStage === "error").length + 1}
+                    of {jobs.length}…
+                  </span>
+                </div>
+                <span className="text-[11px] font-mono tabular-nums text-blue-700">
+                  {jobs.length
+                    ? Math.round(jobs.reduce((s, j) => s + j.progress, 0) / jobs.length)
+                    : 0}
+                  %
+                </span>
+              </div>
+              <div className="h-1.5 bg-blue-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-300"
+                  style={{
+                    width: `${
+                      jobs.length
+                        ? Math.round(jobs.reduce((s, j) => s + j.progress, 0) / jobs.length)
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
           {jobs.map((job) => {
             const isDone = job.currentStage === "complete";
             const isError = job.currentStage === "error";
