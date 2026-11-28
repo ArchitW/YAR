@@ -302,7 +302,7 @@ Known gaps being tracked for the next sprint. See `docs/audit-reports/` for the 
 - **Vision / diagram parsing** — OCR works on images but no VLM for charts, diagrams, or multi-column layout intelligence (RAGFlow-style DeepDoc)
 - **User feedback loop** — no thumbs up/down on answers; no mechanism to feed corrections back into evaluation or prompt tuning
 - **Alembic migrations** — schema changes are applied via `Base.metadata.create_all()` (dev-only); no migration history for schema evolution
-- **Deployment automation** — no Helm chart, Ansible playbook, or one-click cloud deployment path
+- **Deployment automation** — no Helm chart, Ansible playbook, or one-click cloud deployment path. If serving the frontend from a non-Vite static host (e.g. raw nginx), configure SPA history fallback (`try_files $uri /index.html`) so the `/settings` route resolves on direct load/refresh; Vite `dev` and `vite preview` already handle this.
 
 ---
 

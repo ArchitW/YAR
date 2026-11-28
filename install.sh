@@ -46,14 +46,20 @@ fi
 
 pip install -r "$ROOT/backend/requirements.txt"
 
-# Pre-download embedding and reranker models so first run is instant
-echo "==> Pre-downloading embedding (BAAI/bge-m3) and reranker (BAAI/bge-reranker-base) models..."
+# Pre-download embedding and reranker models so first run is instant.
+# Defaults match backend/app/core/config.py (small/fast pair); override via env.
+echo "==> Pre-downloading embedding and reranker models..."
+EMBEDDING_MODEL="${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}" \
+RERANKER_MODEL="${RERANKER_MODEL:-cross-encoder/ettin-reranker-17m-v1}" \
 python -c '
+import os
 from sentence_transformers import SentenceTransformer, CrossEncoder
-print("Downloading BAAI/bge-m3...")
-SentenceTransformer("BAAI/bge-m3", device="cpu")
-print("Downloading BAAI/bge-reranker-base...")
-CrossEncoder("BAAI/bge-reranker-base", device="cpu")
+emb = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+rr = os.environ.get("RERANKER_MODEL", "cross-encoder/ettin-reranker-17m-v1")
+print(f"Downloading embedding model {emb}...")
+SentenceTransformer(emb, device="cpu")
+print(f"Downloading reranker model {rr}...")
+CrossEncoder(rr, device="cpu")
 print("Models cached successfully.")
 '
 

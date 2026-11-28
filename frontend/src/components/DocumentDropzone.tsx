@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { UploadCloud, CheckCircle2, AlertCircle, Loader2, FileText } from "lucide-react";
+import { UploadCloud, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 
 interface DocumentDropzoneProps {
   workspaceId: number;
@@ -88,8 +88,18 @@ export default function DocumentDropzone({
         { method: "POST", body: formData }
       );
 
-      if (!res.ok || !res.body) {
-        throw new Error(`Upload failed with HTTP ${res.status}`);
+      if (!res.ok) {
+        let detail = `Upload failed with HTTP ${res.status}`;
+        try {
+          const err = await res.json();
+          if (err?.detail) detail = String(err.detail);
+        } catch {
+          // ignore body parse errors
+        }
+        throw new Error(detail);
+      }
+      if (!res.body) {
+        throw new Error("Upload failed: empty response");
       }
 
       const reader = res.body.getReader();
@@ -183,6 +193,13 @@ export default function DocumentDropzone({
     }
   };
 
+  const overall = jobs.length
+    ? Math.round(jobs.reduce((s, j) => s + j.progress, 0) / jobs.length)
+    : 0;
+  const allDone =
+    jobs.length > 0 && jobs.every((j) => j.currentStage === "complete" || j.currentStage === "error");
+  const running = jobs.some((j) => j.currentStage !== "complete" && j.currentStage !== "error");
+
   return (
     <div className="w-full space-y-3">
       <div
@@ -229,146 +246,79 @@ export default function DocumentDropzone({
         </div>
       </div>
 
-      {/* Live Ingestion Queue */}
+      {/* Upload queue — single panel, one row per file */}
       {jobs.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-              Ingestion Pipeline
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 bg-slate-50/60 border-b border-slate-100">
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+              Upload queue ({jobs.length})
             </span>
-            {jobs.every((j) => j.currentStage === "complete" || j.currentStage === "error") && (
-              <button
-                type="button"
-                onClick={() => setJobs([])}
-                className="text-[11px] text-slate-400 hover:text-slate-600"
-              >
-                Clear
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-mono tabular-nums text-slate-500">{overall}%</span>
+              {allDone && (
+                <button
+                  type="button"
+                  onClick={() => setJobs([])}
+                  className="text-[11px] text-slate-400 hover:text-slate-600"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
 
-          {jobs.some((j) => j.currentStage !== "complete" && j.currentStage !== "error") && (
-            <div className="p-3 rounded-xl border border-blue-200 bg-blue-50/60">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2 text-xs font-medium text-blue-800">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>
-                    Indexing{" "}
-                    {jobs.filter((j) => j.currentStage === "complete" || j.currentStage === "error").length + 1}
-                    of {jobs.length}…
-                  </span>
-                </div>
-                <span className="text-[11px] font-mono tabular-nums text-blue-700">
-                  {jobs.length
-                    ? Math.round(jobs.reduce((s, j) => s + j.progress, 0) / jobs.length)
-                    : 0}
-                  %
-                </span>
-              </div>
-              <div className="h-1.5 bg-blue-100 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-300"
-                  style={{
-                    width: `${
-                      jobs.length
-                        ? Math.round(jobs.reduce((s, j) => s + j.progress, 0) / jobs.length)
-                        : 0
-                    }%`,
-                  }}
-                />
-              </div>
+          {running && (
+            <div className="h-1 bg-blue-100">
+              <div
+                className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-300"
+                style={{ width: `${overall}%` }}
+              />
             </div>
           )}
 
-          {jobs.map((job) => {
-            const isDone = job.currentStage === "complete";
-            const isError = job.currentStage === "error";
+          <ul className="divide-y divide-slate-100 max-h-72 overflow-y-auto">
+            {jobs.map((job) => {
+              const isDone = job.currentStage === "complete";
+              const isError = job.currentStage === "error";
+              const stageLabel = PIPELINE_STEPS.find((s) => s.key === job.currentStage)?.label;
+              const detail = job.stageDetails[job.currentStage as StageKey];
 
-            return (
-              <div
-                key={job.id}
-                className={`p-3 rounded-xl border text-xs transition-colors ${
-                  isDone
-                    ? "bg-emerald-50/50 border-emerald-200"
-                    : isError
-                    ? "bg-rose-50/50 border-rose-200"
-                    : "bg-white border-slate-200 shadow-sm"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    <span className="font-medium text-slate-800 truncate">{job.name}</span>
+              return (
+                <li key={job.id} className="px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    {isDone ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
+                    ) : isError ? (
+                      <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" aria-hidden="true" />
+                    )}
+                    <span className="text-xs font-medium text-slate-800 truncate flex-1">{job.name}</span>
+                    <span className="text-[10px] font-mono tabular-nums text-slate-400 shrink-0">
+                      {formatBytes(job.sizeBytes)} · {job.progress}%
+                    </span>
                   </div>
-                  <span className="text-[11px] font-mono tabular-nums text-slate-500 shrink-0">
-                    {formatBytes(job.sizeBytes)} · {job.progress}%
-                  </span>
-                </div>
 
-                {/* Progress bar */}
-                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mb-2.5">
-                  <div
-                    className={`h-full transition-all duration-300 ${
-                      isError ? "bg-rose-500" : isDone ? "bg-emerald-500" : "bg-blue-600"
-                    }`}
-                    style={{ width: `${job.progress}%` }}
-                  />
-                </div>
-
-                {/* Stage steps */}
-                <div className="space-y-1">
-                  {PIPELINE_STEPS.map((step) => {
-                    const completed = job.completedStages.includes(step.key);
-                    const active = !isDone && !isError && job.currentStage === step.key;
-                    const detail = job.stageDetails[step.key];
-
-                    return (
-                      <div key={step.key} className="flex items-center justify-between gap-2 text-[11px]">
-                        <div className="flex items-center gap-1.5">
-                          {completed ? (
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                          ) : active ? (
-                            <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />
-                          ) : (
-                            <span className="w-3.5 h-3.5 rounded-full border border-slate-300 inline-block shrink-0" />
-                          )}
-                          <span
-                            className={
-                              completed
-                                ? "text-slate-700 font-medium"
-                                : active
-                                ? "text-blue-700 font-semibold"
-                                : "text-slate-400"
-                            }
-                          >
-                            {step.label}
-                          </span>
-                        </div>
-                        {detail && (
-                          <span className="text-slate-500 truncate max-w-[165px]" title={detail}>
-                            {detail}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {isDone && job.summary && (
-                  <p className="mt-2 pt-1.5 border-t border-emerald-200/70 text-[11px] font-medium text-emerald-800">
-                    {job.summary}
-                  </p>
-                )}
-
-                {isError && job.error && (
-                  <div className="mt-2 pt-1.5 border-t border-rose-200/70 flex items-start gap-1.5 text-[11px] text-rose-700">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>{job.error}</span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                  {isError ? (
+                    <p className="mt-1 pl-5 text-[11px] text-rose-700 break-words leading-snug">
+                      {job.error || "Ingestion failed"}
+                    </p>
+                  ) : isDone ? (
+                    job.summary && (
+                      <p className="mt-1 pl-5 text-[11px] text-emerald-700 break-words leading-snug">
+                        {job.summary}
+                      </p>
+                    )
+                  ) : (
+                    <p className="mt-1 pl-5 text-[11px] text-slate-500 truncate">
+                      {stageLabel}
+                      {detail ? ` — ${detail}` : "…"}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
     </div>

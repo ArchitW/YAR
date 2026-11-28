@@ -9,6 +9,17 @@ export interface ModelsStatus {
   has_api_key: boolean;
   ollama_online: boolean;
   local_models: string[];
+  providers?: {
+    id: number;
+    name: string;
+    base_url: string;
+    model: string;
+    timeout: string;
+    enabled: boolean;
+    is_active: boolean;
+    has_api_key: boolean;
+  }[];
+  active_provider_id?: number | null;
 }
 
 interface ModelSettingsPanelProps {

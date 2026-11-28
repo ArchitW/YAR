@@ -6,8 +6,9 @@ import re
 import shutil
 import uuid
 from typing import Any, Iterator
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, UploadFile, File, status
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -26,9 +27,10 @@ from ..core.config import UPLOAD_DIR, get_qdrant_client, qdrant_mode
 from ..core.middleware import get_request_trace_id
 from ..models.document import Document
 from ..services.audit import AuditService
-from ..services.embeddings import embed, embed_late_chunks, embed_sparse
+from ..services.embeddings import embed, embed_late_chunks, embed_sparse, embedding_dim
 from ..services.chunking import adaptive_chunk, hierarchical_chunk
 from ..services.guardrails import PIISanitizer
+from ..services.cleaning import clean_text
 from ..services.extraction import extract_pdf_boxes, extract_text, find_chunk_bbox, is_supported
 
 logger = logging.getLogger(__name__)
@@ -51,10 +53,31 @@ def _deterministic_point_id(document_id: int, chunk_index: int, text: str) -> st
 def ensure_collection(client: Any | None = None):
     target = client or qdrant
     try:
-        if hasattr(target, "collection_exists") and not target.collection_exists(COLLECTION):
+        dim = embedding_dim()
+        exists = bool(hasattr(target, "collection_exists") and target.collection_exists(COLLECTION))
+
+        if exists:
+            # Rebuild if the configured embedding dimension no longer matches.
+            try:
+                current = target.get_collection(COLLECTION).config.params.vectors["dense"].size
+            except Exception:
+                current = None
+            if current is not None and current != dim:
+                logger.warning(
+                    "Embedding dimension changed (%s → %s); recreating Qdrant collection. Reindex required.",
+                    current,
+                    dim,
+                )
+                try:
+                    target.delete_collection(COLLECTION)
+                except Exception:
+                    logger.warning("Failed to delete old Qdrant collection", exc_info=True)
+                exists = False
+
+        if not exists:
             target.create_collection(
                 COLLECTION,
-                vectors_config={"dense": VectorParams(size=1024, distance=Distance.COSINE)},
+                vectors_config={"dense": VectorParams(size=dim, distance=Distance.COSINE)},
                 sparse_vectors_config={"sparse": SparseVectorParams()},
             )
 
@@ -82,6 +105,70 @@ def ensure_collection(client: Any | None = None):
                     logger.debug("Payload index %s not created (already exists or unsupported)", field)
     except Exception:
         logger.warning("Failed to verify/create Qdrant collection", exc_info=True)
+
+
+def _purge_document_vectors(document_id: int) -> None:
+    """Remove all Qdrant points for a document.
+
+    Embedded (local) Qdrant has a bug where a filter delete can raise a numpy
+    broadcast error once its in-memory deleted-mask drifts, and a failed delete can
+    leave the SQLite connection stuck mid-transaction. We recover by resetting the
+    shared client (close → release the storage lock, recreate → clean reload from
+    disk), refreshing the cached references in modules that captured it at import,
+    then deleting by filter with a scan+delete-by-ids fallback.
+    """
+    import sys
+
+    from ..core.config import reset_qdrant_client
+
+    client = reset_qdrant_client()
+    global qdrant
+    qdrant = client
+    for modname in ("app.services.retrieval", "app.services.dreaming.rem"):
+        module = sys.modules.get(modname)
+        if module is not None and hasattr(module, "qdrant"):
+            setattr(module, "qdrant", client)
+
+    flt = Filter(must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))])
+    try:
+        try:
+            client.delete(COLLECTION, points_selector=flt)
+            return
+        except Exception:
+            logger.warning(
+                "Filter delete failed for document %s; falling back to id scan", document_id, exc_info=True
+            )
+
+        ids: list[Any] = []
+        offset = None
+        while True:
+            points, offset = client.scroll(
+                COLLECTION, limit=256, offset=offset, with_payload=True, with_vectors=False
+            )
+            for p in points:
+                if (p.payload or {}).get("document_id") == document_id:
+                    ids.append(p.id)
+            if offset is None:
+                break
+        if ids:
+            client.delete(COLLECTION, points_selector=ids)
+    except Exception:
+        logger.warning("Vector purge failed for document %s", document_id, exc_info=True)
+
+
+def _find_existing_document(
+    db: Session, workspace_id: int, name: str, is_master: bool
+) -> Document | None:
+    """Return an existing document with the same name in the same scope, if any."""
+    return (
+        db.query(Document)
+        .filter(
+            Document.workspace_id == workspace_id,
+            Document.name == name,
+            Document.is_master == is_master,
+        )
+        .first()
+    )
 
 
 def parse_chunk_metadata(chunk: str) -> dict[str, Any]:
@@ -204,6 +291,78 @@ def index_document_file(
     return len(points)
 
 
+def reindex_document(db: Session, doc: Document, trace_id: str | None = None) -> int:
+    """Re-chunk, embed, and upsert a document from its stored (possibly edited) content.
+
+    Purges any existing vectors for the document first so edits do not leave stale
+    chunks behind. Returns the number of chunks indexed.
+    """
+    try:
+        _purge_document_vectors(doc.id)
+    except Exception:
+        logger.warning("Could not purge vectors before reindex for document %s", doc.id, exc_info=True)
+
+    text = doc.content or ""
+    if not text.strip():
+        doc.status = "error"
+        db.commit()
+        return 0
+
+    ensure_collection()
+    hier_items = hierarchical_chunk(text)
+    if not hier_items:
+        hier_items = [
+            {
+                "child_text": c,
+                "child_index": i,
+                "parent_id": f"p_{i}",
+                "parent_index": i,
+                "parent_text": c,
+                "section": None,
+            }
+            for i, c in enumerate(adaptive_chunk(text))
+        ]
+
+    chunks = [item["child_text"] for item in hier_items]
+    ctx_chunks = [f"Document: {doc.name}\n\n{chunk}" for chunk in chunks]
+    dense_vecs = embed_late_chunks(text, ctx_chunks, original_chunks=chunks)
+    points = []
+    for item, ctx_chunk, dvec in zip(hier_items, ctx_chunks, dense_vecs):
+        meta = parse_chunk_metadata(item["child_text"])
+        sp = embed_sparse(ctx_chunk)
+        sec = item.get("section") or meta.get("section")
+        page_num = meta.get("page_number")
+        points.append(PointStruct(
+            id=_deterministic_point_id(doc.id, item["child_index"], item["child_text"]),
+            vector={
+                "dense": dvec,
+                "sparse": SparseVector(indices=sp["indices"], values=sp["values"]),
+            },
+            payload={
+                "workspace_id": doc.workspace_id,
+                "is_master": bool(doc.is_master),
+                "document_id": doc.id,
+                "file_name": doc.name,
+                "chunk_index": item["child_index"],
+                "total_chunks": len(hier_items),
+                "text": item["child_text"],
+                "context": ctx_chunk,
+                "parent_id": f"{doc.id}_{item['parent_id']}",
+                "parent_text": item["parent_text"],
+                "page_number": page_num,
+                "section": sec,
+                "bbox": None,
+                "page_width": None,
+                "page_height": None,
+                "timestamp": None,
+            },
+        ))
+    qdrant.upsert(COLLECTION, points=points)
+    doc.status = "indexed"
+    db.commit()
+    return len(points)
+
+
 @router.post("/upload")
 def upload_document(
     workspace_id: int,
@@ -215,7 +374,13 @@ def upload_document(
     db: Session = Depends(get_db),
 ):
     trace_id = get_request_trace_id(request)
-    dest = os.path.join(UPLOAD_DIR, file.filename)
+    filename = file.filename or "untitled"
+    if _find_existing_document(db, workspace_id, filename, index_to_master):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A document named '{filename}' already exists in this workspace.",
+        )
+    dest = os.path.join(UPLOAD_DIR, filename)
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     size = os.path.getsize(dest)
@@ -368,6 +533,11 @@ def upload_document_stream(
     trace_id = get_request_trace_id(request)
     filename = file.filename or "untitled"
     content_type = file.content_type
+    if _find_existing_document(db, workspace_id, filename, index_to_master):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A document named '{filename}' already exists in this workspace.",
+        )
     dest = os.path.join(UPLOAD_DIR, filename)
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -587,35 +757,70 @@ def get_document_file(
     )
 
 
-@router.delete("/{document_id}")
-def delete_document(
+class DocumentPatchRequest(BaseModel):
+    name: str | None = None
+    content: str | None = None
+
+
+@router.patch("/{document_id}")
+def update_document(document_id: int, req: DocumentPatchRequest, db: Session = Depends(get_db)):
+    """Edit a document's name and/or extracted text. Edited content is re-cleaned.
+
+    Saving does not re-index automatically — call POST /documents/{id}/reindex to
+    rebuild vectors from the updated content.
+    """
+    doc = db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document {document_id} not found")
+
+    if req.name is not None:
+        new_name = req.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="name cannot be empty")
+        doc.name = new_name
+    if req.content is not None:
+        doc.content = clean_text(req.content)
+        doc.status = "indexed" if doc.content.strip() else "error"
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
+@router.post("/{document_id}/reindex")
+def reindex_document_endpoint(
     document_id: int,
     request: Request = None,
     db: Session = Depends(get_db),
 ):
-    """Delete a document, purge vectors from Qdrant, and record an audit log."""
+    """Rebuild Qdrant vectors for a document from its stored (possibly edited) content."""
     trace_id = get_request_trace_id(request)
     doc = db.get(Document, document_id)
     if not doc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Document {document_id} not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document {document_id} not found")
 
-    # Purge vectors from Qdrant
+    chunks = reindex_document(db, doc, trace_id)
+    AuditService.record(
+        db=db,
+        event_type="document.reindex",
+        summary=f"Reindexed '{doc.name}' (ID: {document_id}) into {chunks} chunks",
+        status="success" if chunks > 0 else "failure",
+        trace_id=trace_id,
+        workspace_id=doc.workspace_id,
+        metadata={"document_id": document_id, "chunks": chunks},
+    )
+    return {"document_id": document_id, "chunks": chunks, "status": doc.status}
+
+
+def _delete_document_impl(db: Session, doc: Document, trace_id: str | None) -> None:
+    """Purge vectors, delete the row, and audit. Caller owns the session lifecycle."""
+    document_id = doc.id
     try:
-        qdrant.delete(
-            COLLECTION,
-            points_selector=Filter(
-                must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
-            ),
-        )
+        _purge_document_vectors(document_id)
     except Exception:
         logger.warning("Could not sync Qdrant vector deletion for document %s", document_id, exc_info=True)
 
     workspace_id = doc.workspace_id
     doc_name = doc.name
-
     db.delete(doc)
     db.commit()
 
@@ -629,4 +834,56 @@ def delete_document(
         metadata={"document_id": document_id, "name": doc_name},
     )
 
+
+def _delete_document_background(document_id: int) -> None:
+    """Background deletion: opens its own session (the request session is closed)."""
+    from ..core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        doc = db.get(Document, document_id)
+        if doc is not None:
+            _delete_document_impl(db, doc, None)
+    except Exception:
+        logger.exception("Background deletion failed for document %s", document_id)
+    finally:
+        db.close()
+
+
+@router.get("/{document_id}")
+def get_document(document_id: int, db: Session = Depends(get_db)):
+    """Return a single document (used by the UI to poll async deletion)."""
+    doc = db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document {document_id} not found")
+    return doc
+
+
+@router.delete("/{document_id}")
+def delete_document(
+    document_id: int,
+    background: bool = False,
+    request: Request = None,
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+):
+    """Delete a document, purge vectors, and audit.
+
+    When ``background=true`` the work runs via FastAPI BackgroundTasks (same
+    process, after the response is sent) so the client is not blocked; the UI polls
+    GET /documents/{id} until it 404s to show a completion notification.
+    """
+    trace_id = get_request_trace_id(request)
+    doc = db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document {document_id} not found",
+        )
+
+    if background and background_tasks is not None:
+        background_tasks.add_task(_delete_document_background, document_id)
+        return {"status": "queued", "id": document_id}
+
+    _delete_document_impl(db, doc, trace_id)
     return {"deleted": True, "id": document_id}

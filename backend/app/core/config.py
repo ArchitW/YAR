@@ -29,6 +29,39 @@ def get_qdrant_client() -> Any:
     return _qdrant_client
 
 
+def reset_qdrant_client() -> Any:
+    """Close and recreate the cached Qdrant client.
+
+    Embedded (local) Qdrant can drift into an inconsistent state (stale deleted
+    mask, stuck SQLite transaction) after a failed delete. Closing releases the
+    storage lock and recreating reloads a clean view from disk. Callers that cache
+    the client at import time must refresh their reference to the returned value.
+    """
+    global _qdrant_client
+    try:
+        if _qdrant_client is not None:
+            _qdrant_client.close()
+    except Exception:
+        pass
+    _qdrant_client = None
+    return get_qdrant_client()
+
+
+def apply_hf_offline_mode() -> bool:
+    """Force Hugging Face hub offline so cached models load without network calls.
+
+    Controlled by ``HF_OFFLINE`` (default true). When enabled, sets
+    ``HF_HUB_OFFLINE``/``TRANSFORMERS_OFFLINE`` so SentenceTransformer/CrossEncoder
+    resolve from the local cache. Callers should retry online if the cache is empty.
+    Returns whether offline mode is active.
+    """
+    enabled = os.getenv("HF_OFFLINE", "true").strip().lower() in ("1", "true", "yes", "on")
+    if enabled:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    return enabled
+
+
 def qdrant_mode() -> str:
     """Return 'local' for embedded on-disk Qdrant, otherwise 'server'."""
     return "local" if QDRANT_PATH else "server"
@@ -44,6 +77,21 @@ def reranker_settings() -> dict[str, Any]:
     return {
         "enabled": raw_enabled in ("1", "true", "yes", "on"),
         "top_k": top_k,
+        "model": os.getenv("RERANKER_MODEL", "cross-encoder/ettin-reranker-17m-v1").strip()
+        or "cross-encoder/ettin-reranker-17m-v1",
+    }
+
+
+def embedding_settings() -> dict[str, Any]:
+    """Embedding model settings read at call time.
+
+    Defaults to a small, fast model (384-dim). Changing the model changes the
+    vector dimension, so the Qdrant collection must be rebuilt and documents
+    reindexed (handled by the settings router).
+    """
+    return {
+        "model": os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5").strip()
+        or "BAAI/bge-small-en-v1.5",
     }
 
 

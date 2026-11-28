@@ -69,6 +69,8 @@ class ModelsResponse(BaseModel):
     has_api_key: bool = False
     ollama_online: bool = False
     local_models: list[str] = Field(default_factory=list)
+    providers: list[dict[str, Any]] = Field(default_factory=list)
+    active_provider_id: int | None = None
 
 
 class ModelConfigRequest(BaseModel):
@@ -111,6 +113,24 @@ def list_available_models() -> ModelsResponse:
         timeout=float(o_cfg["timeout"]),
     )
 
+    # Registered endpoints (api keys masked) + active pointer for the UI selector.
+    providers: list[dict[str, Any]] = []
+    active_id: int | None = None
+    try:
+        from ..core.database import SessionLocal
+        from ..models.llm_provider import LLMProvider
+
+        db = SessionLocal()
+        try:
+            rows = db.query(LLMProvider).order_by(LLMProvider.id.asc()).all()
+            providers = [r.to_dict() for r in rows]
+            active = next((r for r in rows if r.is_active and r.enabled), None)
+            active_id = active.id if active else None
+        finally:
+            db.close()
+    except Exception:
+        providers, active_id = [], None
+
     return ModelsResponse(
         configured_provider=active_provider.name if active_provider else None,
         configured_model=active_provider.model if active_provider else (llm_cfg.get("model") or None),
@@ -119,6 +139,8 @@ def list_available_models() -> ModelsResponse:
         has_api_key=bool(llm_cfg.get("api_key")),
         ollama_online=is_online,
         local_models=local_models,
+        providers=providers,
+        active_provider_id=active_id,
     )
 
 

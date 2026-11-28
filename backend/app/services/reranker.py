@@ -1,19 +1,36 @@
 import logging
+import os
 from typing import Any, Dict, List
 from sentence_transformers import CrossEncoder
 
-from ..core.config import detect_torch_device
+from ..core.config import apply_hf_offline_mode, detect_torch_device, reranker_settings
 
 logger = logging.getLogger(__name__)
 _reranker = None
+_reranker_name = None
 
 
 def get_reranker() -> CrossEncoder:
-    global _reranker
+    global _reranker, _reranker_name
+    model_name = reranker_settings()["model"]
+    if _reranker is not None and _reranker_name != model_name:
+        _reranker = None
+        _reranker_name = None
     if _reranker is None:
         device = detect_torch_device()
-        logger.info("Loading reranker BAAI/bge-reranker-base on device=%s", device)
-        _reranker = CrossEncoder("BAAI/bge-reranker-base", device=device)
+        logger.info("Loading reranker %s on device=%s", model_name, device)
+        offline = apply_hf_offline_mode()
+        try:
+            _reranker = CrossEncoder(model_name, device=device)
+        except Exception:
+            if offline:
+                logger.warning("Local cache miss for %s; downloading from Hugging Face", model_name)
+                os.environ.pop("HF_HUB_OFFLINE", None)
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                _reranker = CrossEncoder(model_name, device=device)
+            else:
+                raise
+        _reranker_name = model_name
         if device == "cuda":
             try:
                 _reranker.model.half()

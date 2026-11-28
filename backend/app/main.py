@@ -16,6 +16,7 @@ from .models import chat as _chat_model  # noqa: F401 — register ChatMessage t
 from .models import memory as _memory_model  # noqa: F401 — register MemoryNode & MemoryEdge tables
 from .models import audit as _audit_model  # noqa: F401 — register AuditLog table
 from .models import connector as _connector_model  # noqa: F401 — register Connector table
+from .models import llm_provider as _llm_provider_model  # noqa: F401 — register LLMProvider table
 
 Base.metadata.create_all(bind=engine)
 
