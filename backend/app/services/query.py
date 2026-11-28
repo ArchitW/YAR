@@ -96,7 +96,11 @@ class QueryRewriter:
         if not history:
             return query.strip()
 
-        if not cls.needs_rewriting(query) and len(query.split()) > 6:
+        # BUG FIX [2026-11-28]: Avoid unnecessary LLM rewrite on standalone 4-6 word queries.
+        # Root cause: `> 6` sent pronoun-free 4-6 word queries through an extra blocking LLM rewrite call.
+        # Fix: Align threshold with needs_rewriting() (which already flags <= 3 words and pronoun triggers).
+        # Watch for: Short non-pronoun follow-up queries of 4+ words that rely on implicit context.
+        if not cls.needs_rewriting(query) and len(query.split()) >= 4:
             return query.strip()
 
         if provider is None:
