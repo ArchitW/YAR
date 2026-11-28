@@ -366,6 +366,7 @@ def upload_document_stream(
                 },
             })
         except Exception as ex:
+            db.rollback()
             logger.exception("Streaming upload failed for %s", filename)
             yield _sse_event({
                 "stage": "error",
