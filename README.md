@@ -13,19 +13,22 @@ YAR is a **self-hosted, privacy-first knowledge intelligence platform**. Upload 
 - **PDF bounding boxes:** Visual text-run extraction with `{page, bbox, page_width, page_height}` metadata for citation highlighting
 - **Tabular extraction:** CSV, XLSX, and PDF tables converted to clean GitHub-flavoured Markdown
 - **OCR fallback:** RapidOCR on scanned images and image-only PDF pages
-- **Text cleaning:** NFKC normalization, hyphenation repair, whitespace collapse
+- **Text cleaning & PII redaction:** NFKC normalization, hyphenation repair, whitespace collapse, and `PIISanitizer` redaction before indexing
+- **Idempotent & async ingest:** Deterministic UUIDv5 Qdrant point IDs prevent duplicates on re-upload; optional Celery background indexing via `POST /documents/upload?async_ingest=true` (or `ASYNC_INGEST_ENABLED=true`, returning `202 Accepted`)
 
 ### Retrieval & Ranking
-- **Hybrid search:** Dense embeddings (bge-m3) + 31-bit sparse lexical vectors (sublinear TF, stopword filtering, ascending index constraint) fused via Reciprocal Rank Fusion (RRF)
-- **Late chunking:** Transformer attention-span pooling over full-document context before slicing (preserves cross-sentence semantics)
+- **Hybrid search:** Dense embeddings (bge-m3, FP16 + `torch.inference_mode()` on CUDA) + 31-bit sparse lexical vectors (sublinear TF, stopword filtering, ascending index constraint) fused via Reciprocal Rank Fusion (RRF)
+- **Late chunking:** Transformer attention-span pooling over full-document context before slicing, with batched fallback for out-of-window spans
 - **Parent-child hierarchical chunking:** Child chunks (150 tokens) vectorized for precision; parent sections (800 tokens) injected into LLM context for completeness
-- **Cross-encoder reranking:** BGE reranker with graceful extractive fallback when no LLM is available
-- **Query rewriting:** Conversational pronoun resolution from chat history (last 4 turns)
-- **HyDE:** Hypothetical Document Embeddings to bridge vocabulary gaps (opt-in via `HYDE_ENABLED=true`)
-- **Workspace-scoped filtering:** All Qdrant queries are tenant-isolated at the database level
+- **Cross-encoder reranking:** Opt-in BGE reranker (`RERANK_ENABLED=false` by default for low-latency retrieval; caps candidates to `RERANK_TOP_K=10` when enabled) with graceful fallback
+- **Query rewriting:** Conversational pronoun resolution from chat history (last 4 turns; standalone 4+ word queries skip the rewrite LLM call)
+- **HyDE:** Hypothetical Document Embeddings to bridge vocabulary gaps (opt-in via `HYDE_ENABLED=false`)
+- **Workspace-scoped filtering:** All Qdrant queries are tenant-isolated at the database level (with payload indexes on `workspace_id` and `is_master` in server mode)
 
 ### Chat & Streaming
-- **SSE streaming:** `POST /chat/stream` returns `text/event-stream` with structured `init → token → done` events; first token in < 500 ms on fast providers
+- **SSE streaming:** `POST /chat/stream` returns `text/event-stream` with `status → thinking → init → token → done` (and `error`) events
+- **Steps & Thinking UI:** `prompt-kit` `Steps` + `Loader` (`wave`, `text-shimmer`, `pulse-dot`) render live pipeline stages and streamed `reasoning_content`
+- **Per-stage latency metrics:** `timings_ms` (`route_ms`, `rewrite_ms`, `retrieve_ms`, `memory_ms`, `ttft_ms`, `llm_ms`, `total_ms`) logged and recorded in `AuditLog`
 - **Unary chat:** `POST /chat` for non-streaming clients; both paths share the same retrieval + guardrails pipeline
 - **Extractive fallback:** When no LLM is configured, returns a grounded bullet-point answer from retrieved chunks and marks `"degraded": true`
 - **Citation viewer:** Side-by-side PDF split-screen with SVG/canvas bounding-box highlight overlay on click
@@ -120,7 +123,7 @@ Requires Docker and Docker Compose.
    docker compose down
    ```
 
-   > **Data persistence:** `postgres` (`pgdata`), `qdrant` (`qdrant_data`), and uploaded files (`uploads_data`) all use named Docker volumes, so your database, vector index, and uploaded documents survive `docker compose down` and container rebuilds. Use `docker compose down -v` only if you want to wipe all stored data.
+   > **Data persistence & GPU:** `postgres` (`pgdata`), `qdrant` (`qdrant_data`), uploaded files (`uploads_data`), and HuggingFace model weights (`hf_cache`) all use named Docker volumes. `backend` and `worker` request NVIDIA GPU access via `deploy.resources.reservations.devices`; pass `--build-arg PREFETCH_MODELS=true` to bake `bge-m3` and `bge-reranker-base` into the image. Use `docker compose down -v` only if you want to wipe all stored data.
 
 ### Option 2: Direct Install Without Docker
 
@@ -132,19 +135,19 @@ Requires Python 3.11+ and Node.js 18+.
    ./install.sh
    ```
 
-2. Start the Backend API and Frontend UI:
+2. Start the Backend API and Frontend UI (`./run.sh` is an alias for `./start.sh`):
 
    ```bash
-   ./start.sh
+   ./run.sh
    ```
 
-   `start.sh` also starts a local Qdrant server (downloaded on first run to `.qdrant/`). Manage it directly with:
+   `start.sh` also starts a local Qdrant server (downloaded on first run to `.qdrant/`) and Redis if `redis-server` or Docker is available. Manage Qdrant directly with:
 
    ```bash
    ./scripts/qdrant.sh start|stop|status
    ```
 
-   > **Data persistence:** All data is stored locally on disk — SQLite database at `backend/yar.db`, Qdrant vectors at `backend/qdrant_data/`, and uploaded files at `backend/uploads/`. Optional background Celery workers and SearXNG web search require Redis/SearXNG (or Option 1).
+   > **Data persistence:** All data is stored locally on disk — SQLite database (WAL mode, 30s busy timeout) at `backend/yar.db`, Qdrant vectors at `.qdrant/` (server mode) or `backend/qdrant_data/` (embedded mode), and uploaded files at `backend/uploads/`.
 
    > **Retrieval mode:** the default is a Qdrant server (`QDRANT_URL`) with an ANN index, which is what you need beyond ~20k chunks. For a small offline dev set you can set `QDRANT_PATH=./qdrant_data` in `backend/.env` to use embedded mode instead — it is brute-force and will not scale.
 
@@ -177,6 +180,10 @@ JWT_SECRET=change-me-in-production       # required when AUTH_ENABLED=true
 # Retrieval & Query
 QUERY_REWRITE_ENABLED=true
 HYDE_ENABLED=false                       # opt-in: generates hypothetical passages
+RERANK_ENABLED=false                     # opt-in: cross-encoder reranking
+RERANK_TOP_K=10
+MAX_CONTEXT_CHARS=12000
+ASYNC_INGEST_ENABLED=false               # true queues /documents/upload via Celery (202)
 WEB_SEARCH_ENABLED=true
 WEB_SEARCH_CONFIDENCE_THRESHOLD=0.25
 SEARXNG_BASE_URL=http://localhost:8080
@@ -206,7 +213,8 @@ If `LLM_BASE_URL` or `LLM_MODEL` is unset, or the provider is unreachable, `/cha
 | `GET /chat/history` | Paginated conversation history |
 | `GET /chat/models` | Active provider, model, Ollama status, local model list |
 | `GET /chat/export` | Export conversation (markdown/json/txt) |
-| `POST /documents/upload` | Upload and index a document |
+| `POST /documents/upload` | Upload and index a document (`?async_ingest=true` queues via Celery and returns `202`) |
+| `GET /health` | Service health (`db`, `redis`, `qdrant`), `compute` device/GPU, and `retrieval.mode` |
 | `GET /documents/{id}/file` | Serve raw document binary (PDF range support pending) |
 | `GET /memory` | Paginated memory nodes with type/status filtering |
 | `GET /memory/entities` | Living Dossier — active entity preferences and facts |
@@ -273,7 +281,6 @@ Known gaps being tracked for the next sprint. See `docs/audit-reports/` for the 
 
 ### Logic Gaps
 - **Faithfulness verifier logic error** — answers with zero citations are classified as "fully faithful" (score 1.0). Should be flagged as highest hallucination risk.
-- **PII scrubbing only on web-connector content** — uploaded PDFs, TXT, CSV files are not PII-scrubbed before vectorization. The `extract_text()` pipeline does not call `PIISanitizer`.
 - **SearXNG connector commits per-document** in the sync loop — a failed Qdrant upsert mid-sync leaves orphaned SQL records with no vectors.
 - **Confidence threshold mismatch** — `WEB_SEARCH_CONFIDENCE_THRESHOLD` defaults to `0.25`; the ticket spec says the "high confidence" cutoff is `0.4`. Undocumented deviation.
 
@@ -290,7 +297,7 @@ Known gaps being tracked for the next sprint. See `docs/audit-reports/` for the 
 - **GraphRAG / knowledge graph extraction** — entity/relationship extraction from documents into a queryable graph (LightRAG-style)
 - **RAGAS / continuous evaluation CI** — `eval.py` measures recall@k only; no faithfulness, relevance, or context precision metrics on a golden dataset
 - **Webhook integrations** — no event hooks for document lifecycle, ingest completion, or answer quality feedback
-- **Observability** — no Langfuse/OpenTelemetry integration; tracing exists via `X-Trace-ID` but no span-level pipeline visibility
+- **Observability** — per-stage `timings_ms` are logged and stored in `AuditLog`, but no external OpenTelemetry/Langfuse exporter is wired yet
 - **Audio ingestion** — no Whisper or speech-to-text pipeline
 - **Vision / diagram parsing** — OCR works on images but no VLM for charts, diagrams, or multi-column layout intelligence (RAGFlow-style DeepDoc)
 - **User feedback loop** — no thumbs up/down on answers; no mechanism to feed corrections back into evaluation or prompt tuning
