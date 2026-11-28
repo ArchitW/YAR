@@ -90,7 +90,8 @@ class OpenAICompatibleProvider:
             raise ProviderError("provider returned an empty completion")
         return content.strip()
 
-    def stream_complete(self, system_prompt: str, user_prompt: str) -> Iterator[str]:
+    def stream_complete_events(self, system_prompt: str, user_prompt: str) -> Iterator[tuple[str, str]]:
+        """Yield ('thinking' | 'token', text) tuples as SSE deltas arrive."""
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -128,21 +129,28 @@ class OpenAICompatibleProvider:
                                 content = delta.get("content")
                                 if content:
                                     yielded_content = True
-                                    yield content
-                                elif not yielded_content:
+                                    yield ("token", content)
+                                else:
                                     reasoning = delta.get("reasoning_content")
                                     if reasoning:
-                                        reasoning_buf.append(reasoning)
+                                        if not yielded_content:
+                                            reasoning_buf.append(reasoning)
+                                        yield ("thinking", reasoning)
                             except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                                 continue
                     if not yielded_content and reasoning_buf:
-                        yield "".join(reasoning_buf)
+                        yield ("token", "".join(reasoning_buf))
         except httpx.HTTPStatusError as exc:
             body = (exc.response.text or "")[:300]
             logger.warning("Provider HTTP %s: %s", exc.response.status_code, body)
             raise ProviderError(f"provider stream request failed: {exc} — {body}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"provider stream request failed: {exc}") from exc
+
+    def stream_complete(self, system_prompt: str, user_prompt: str) -> Iterator[str]:
+        for kind, text in self.stream_complete_events(system_prompt, user_prompt):
+            if kind == "token":
+                yield text
 
 
 class OllamaProvider(OpenAICompatibleProvider):

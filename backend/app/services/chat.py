@@ -396,7 +396,9 @@ def stream_answer_query(
             from .agent.orchestrator import AgenticOrchestrator
 
             yield {"type": "status", "stage": "web", "detail": "Searching the web…"}
+            t0 = time.perf_counter()
             web_context, citations = AgenticOrchestrator.execute_web_fallback(message, [])
+            timings_ms["web_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
             context = web_context or ""
             yield {
                 "type": "status",
@@ -409,13 +411,19 @@ def stream_answer_query(
             history = _get_recent_history(db, workspace_id)
             if history:
                 yield {"type": "status", "stage": "rewrite", "detail": "Refining query from conversation…"}
+                t0 = time.perf_counter()
                 rewritten_query = QueryRewriter.rewrite_conversational_query(history, message, provider=llm)
+                timings_ms["rewrite_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
             else:
                 rewritten_query = message
 
             hyde_passage = None
             if llm is not None and len(message.split()) >= 4:
+                t0 = time.perf_counter()
                 hyde_passage = QueryRewriter.generate_hyde(rewritten_query or message, provider=llm)
+                hyde_elapsed = round((time.perf_counter() - t0) * 1000.0, 1)
+                if hyde_passage or hyde_elapsed >= 5.0:
+                    timings_ms["hyde_ms"] = hyde_elapsed
 
             yield {"type": "status", "stage": "retrieve", "detail": "Searching local knowledge…"}
             t0 = time.perf_counter()
@@ -443,7 +451,9 @@ def stream_answer_query(
             if AgenticOrchestrator.should_search_web(message, hits):
                 yield {"type": "status", "stage": "web", "detail": "Searching the web…"}
                 search_query = rewritten_query or message
+                t0 = time.perf_counter()
                 web_context, web_citations = AgenticOrchestrator.execute_web_fallback(search_query, citations)
+                timings_ms["web_ms"] = round(timings_ms.get("web_ms", 0.0) + (time.perf_counter() - t0) * 1000.0, 1)
                 if web_context:
                     context = f"{context}\n\n{web_context}" if context else web_context
                     citations = citations + web_citations
@@ -474,8 +484,16 @@ def stream_answer_query(
         chunks: list[str] = []
         conv_degraded = False
         try:
+            events_fn = getattr(llm, "stream_complete_events", None)
             stream_fn = getattr(llm, "stream_complete", None)
-            if callable(stream_fn):
+            if callable(events_fn):
+                for kind, chunk in events_fn(CONVERSATIONAL_SYSTEM_PROMPT, message):
+                    if kind == "thinking":
+                        yield {"type": "thinking", "token": chunk}
+                    else:
+                        chunks.append(chunk)
+                        yield {"type": "token", "token": chunk}
+            elif callable(stream_fn):
                 for token in stream_fn(CONVERSATIONAL_SYSTEM_PROMPT, message):
                     chunks.append(token)
                     yield {"type": "token", "token": token}
@@ -524,6 +542,7 @@ def stream_answer_query(
     memory_context = ""
     if db is not None and save_to_memory:
         yield {"type": "status", "stage": "memory", "detail": "Checking workspace memory…"}
+        t0 = time.perf_counter()
         try:
             from .memory import MemoryService
 
@@ -532,6 +551,7 @@ def stream_answer_query(
             memory_context = MemoryService.format_memory_context(dossier, memories)
         except Exception:
             logger.warning("Failed to retrieve memory context", exc_info=True)
+        timings_ms["memory_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
 
     prompt_parts = []
     if memory_context:
@@ -552,8 +572,18 @@ def stream_answer_query(
     t_llm_start = time.perf_counter()
     ttft_ms: float | None = None
     try:
+        events_fn = getattr(llm, "stream_complete_events", None)
         stream_fn = getattr(llm, "stream_complete", None)
-        if callable(stream_fn):
+        if callable(events_fn):
+            for kind, chunk in events_fn(SYSTEM_PROMPT, user_prompt):
+                if ttft_ms is None:
+                    ttft_ms = round((time.perf_counter() - t_llm_start) * 1000.0, 1)
+                if kind == "thinking":
+                    yield {"type": "thinking", "token": chunk}
+                else:
+                    chunks.append(chunk)
+                    yield {"type": "token", "token": chunk}
+        elif callable(stream_fn):
             for token in stream_fn(SYSTEM_PROMPT, user_prompt):
                 if ttft_ms is None:
                     ttft_ms = round((time.perf_counter() - t_llm_start) * 1000.0, 1)
