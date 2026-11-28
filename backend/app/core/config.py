@@ -34,6 +34,19 @@ def qdrant_mode() -> str:
     return "local" if QDRANT_PATH else "server"
 
 
+def reranker_settings() -> dict[str, Any]:
+    """Cross-encoder reranker settings read at call time."""
+    raw_enabled = os.getenv("RERANK_ENABLED", "false").strip().lower()
+    try:
+        top_k = max(1, int(os.getenv("RERANK_TOP_K", "10").strip() or "10"))
+    except ValueError:
+        top_k = 10
+    return {
+        "enabled": raw_enabled in ("1", "true", "yes", "on"),
+        "top_k": top_k,
+    }
+
+
 def detect_torch_device() -> str:
     """Return the best available PyTorch compute device ('cuda', 'mps', or 'cpu')."""
     try:

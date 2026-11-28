@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -5,7 +6,7 @@ import re
 import shutil
 import uuid
 from typing import Any, Iterator
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
@@ -39,6 +40,12 @@ COLLECTION = "yar_chunks"
 
 # Local (embedded) mode has no ANN index and is not recommended above this size.
 LOCAL_MODE_WARN_POINTS = 20_000
+
+
+def _deterministic_point_id(document_id: int, chunk_index: int, text: str) -> str:
+    """Return a stable UUIDv5 for a document chunk so upserts are idempotent."""
+    content_hash = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{document_id}:{chunk_index}:{content_hash}"))
 
 
 def ensure_collection(client: Any | None = None):
@@ -88,11 +95,122 @@ def parse_chunk_metadata(chunk: str) -> dict[str, Any]:
     return meta
 
 
+def index_document_file(
+    db: Session,
+    doc: Document,
+    file_path: str,
+    content_type: str | None = None,
+    index_to_master: bool = False,
+    trace_id: str | None = None,
+) -> int:
+    """Extract, sanitize, chunk, embed, and upsert an uploaded document into Qdrant."""
+    try:
+        text = extract_text(file_path, content_type)
+    except Exception:
+        logger.exception("Failed to extract text from %s", doc.name)
+        text = ""
+
+    pdf_blocks = []
+    is_pdf = (content_type == "application/pdf") or (doc.name and doc.name.lower().endswith(".pdf"))
+    if is_pdf:
+        try:
+            pdf_blocks = extract_pdf_boxes(file_path)
+        except Exception:
+            logger.warning("Failed to extract PDF bounding boxes from %s", doc.name, exc_info=True)
+
+    pii_stats = {"total": 0}
+    if text:
+        text, pii_stats = PIISanitizer.sanitize(text)
+        status_val = "indexed"
+    elif not is_supported(file_path, content_type):
+        status_val = "queued"
+    else:
+        status_val = "error"
+
+    doc.content = text
+    doc.status = status_val
+    db.commit()
+    db.refresh(doc)
+
+    AuditService.record(
+        db=db,
+        event_type="document.upload",
+        summary=f"Indexed '{doc.name}' ({doc.size_bytes} bytes, status: {status_val})",
+        status="success" if status_val != "error" else "failure",
+        trace_id=trace_id,
+        workspace_id=doc.workspace_id,
+        metadata={
+            "filename": doc.name,
+            "size_bytes": doc.size_bytes,
+            "status": status_val,
+            "redacted_pii_count": pii_stats["total"],
+        },
+    )
+
+    if not text:
+        return 0
+
+    ensure_collection()
+    hier_items = hierarchical_chunk(text)
+    if not hier_items:
+        hier_items = [
+            {
+                "child_text": c,
+                "child_index": i,
+                "parent_id": f"p_{i}",
+                "parent_index": i,
+                "parent_text": c,
+                "section": None,
+            }
+            for i, c in enumerate(adaptive_chunk(text))
+        ]
+
+    chunks = [item["child_text"] for item in hier_items]
+    ctx_chunks = [f"Document: {doc.name}\n\n{chunk}" for chunk in chunks]
+    dense_vecs = embed_late_chunks(text, ctx_chunks, original_chunks=chunks)
+    points = []
+    for item, ctx_chunk, dvec in zip(hier_items, ctx_chunks, dense_vecs):
+        meta = parse_chunk_metadata(item["child_text"])
+        sp = embed_sparse(ctx_chunk)
+        sec = item.get("section") or meta.get("section")
+        page_num = meta.get("page_number")
+        bbox_info = find_chunk_bbox(item["child_text"], page_num, pdf_blocks) if pdf_blocks else None
+        points.append(PointStruct(
+            id=_deterministic_point_id(doc.id, item["child_index"], item["child_text"]),
+            vector={
+                "dense": dvec,
+                "sparse": SparseVector(indices=sp["indices"], values=sp["values"]),
+            },
+            payload={
+                "workspace_id": doc.workspace_id,
+                "is_master": index_to_master,
+                "document_id": doc.id,
+                "file_name": doc.name,
+                "chunk_index": item["child_index"],
+                "total_chunks": len(hier_items),
+                "text": item["child_text"],
+                "context": ctx_chunk,
+                "parent_id": f"{doc.id}_{item['parent_id']}",
+                "parent_text": item["parent_text"],
+                "page_number": page_num,
+                "section": sec,
+                "bbox": bbox_info.get("bbox") if bbox_info else None,
+                "page_width": bbox_info.get("page_width") if bbox_info else None,
+                "page_height": bbox_info.get("page_height") if bbox_info else None,
+                "timestamp": None,
+            },
+        ))
+    qdrant.upsert(COLLECTION, points=points)
+    return len(points)
+
+
 @router.post("/upload")
 def upload_document(
     workspace_id: int,
     file: UploadFile = File(...),
     index_to_master: bool = False,
+    async_ingest: bool = False,
+    response: Response = None,
     request: Request = None,
     db: Session = Depends(get_db),
 ):
@@ -101,6 +219,32 @@ def upload_document(
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     size = os.path.getsize(dest)
+
+    use_async = async_ingest or os.getenv("ASYNC_INGEST_ENABLED", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if use_async:
+        from ..tasks import index_document_task
+
+        doc = Document(
+            workspace_id=workspace_id,
+            is_master=index_to_master,
+            name=file.filename,
+            file_type=file.content_type or "unknown",
+            status="queued",
+            size_bytes=size,
+            content="",
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+        index_document_task.delay(doc.id, dest, file.content_type, index_to_master, trace_id)
+        if response is not None:
+            response.status_code = status.HTTP_202_ACCEPTED
+        return doc
     try:
         text = extract_text(dest, file.content_type)
     except Exception:
@@ -180,7 +324,7 @@ def upload_document(
             page_num = meta.get("page_number")
             bbox_info = find_chunk_bbox(item["child_text"], page_num, pdf_blocks) if pdf_blocks else None
             points.append(PointStruct(
-                id=str(uuid.uuid4()),
+                id=_deterministic_point_id(doc.id, item["child_index"], item["child_text"]),
                 vector={
                     "dense": dvec,
                     "sparse": SparseVector(indices=sp["indices"], values=sp["values"]),
@@ -345,7 +489,7 @@ def upload_document_stream(
                     page_num = meta.get("page_number")
                     bbox_info = find_chunk_bbox(item["child_text"], page_num, pdf_blocks) if pdf_blocks else None
                     points.append(PointStruct(
-                        id=str(uuid.uuid4()),
+                        id=_deterministic_point_id(doc.id, item["child_index"], item["child_text"]),
                         vector={
                             "dense": dvec,
                             "sparse": SparseVector(indices=sp["indices"], values=sp["values"]),
