@@ -11,13 +11,37 @@ fi
 cleanup() {
   echo ""
   echo "Stopping YAR services..."
-  kill "${BACKEND_PID:-}" "${FRONTEND_PID:-}" 2>/dev/null || true
-  wait "${BACKEND_PID:-}" "${FRONTEND_PID:-}" 2>/dev/null || true
+  kill "${BACKEND_PID:-}" "${FRONTEND_PID:-}" "${REDIS_PID:-}" 2>/dev/null || true
+  wait "${BACKEND_PID:-}" "${FRONTEND_PID:-}" "${REDIS_PID:-}" 2>/dev/null || true
   if [ "${QDRANT_STARTED:-0}" = "1" ]; then
     "$ROOT/scripts/qdrant.sh" stop >/dev/null 2>&1 || true
   fi
 }
 trap cleanup INT TERM
+
+ensure_redis() {
+  if "$ROOT/backend/.venv/bin/python" -c "import socket; s=socket.create_connection(('127.0.0.1', 6379), 1); s.close()" 2>/dev/null; then
+    echo "==> Redis already running on localhost:6379"
+    return 0
+  fi
+
+  if command -v redis-server >/dev/null 2>&1; then
+    echo "==> Starting local redis-server on port 6379..."
+    redis-server --port 6379 &
+    REDIS_PID=$!
+    return 0
+  fi
+
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    echo "==> Starting Redis via Docker Compose..."
+    (cd "$ROOT" && docker compose up -d redis) && return 0
+  fi
+
+  echo "WARNING: Redis is not running on localhost:6379 (neither redis-server nor Docker is available)." >&2
+  echo "         /health will report redis as offline until Redis is started." >&2
+}
+
+ensure_redis
 
 # Start the local Qdrant server unless the user opted into embedded mode.
 QDRANT_STARTED=0
