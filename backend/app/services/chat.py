@@ -381,6 +381,7 @@ def stream_answer_query(
     if use_local_knowledge:
         from .router import classify_query, route_query
 
+        yield {"type": "status", "stage": "route", "detail": "Understanding your question…"}
         route = route_query(message).get("route") or classify_query(message).get("route")
 
         if route == "general_chat":
@@ -391,26 +392,26 @@ def stream_answer_query(
             yield {"type": "status", "stage": "web", "detail": "Searching the web…"}
             web_context, citations = AgenticOrchestrator.execute_web_fallback(message, [])
             context = web_context or ""
+            yield {
+                "type": "status",
+                "stage": "web",
+                "detail": f"Found {len(citations)} web source{'s' if len(citations) != 1 else ''}",
+            }
         else:
             from .query import QueryRewriter
 
             history = _get_recent_history(db, workspace_id)
             if history:
-                yield {"type": "status", "stage": "rewrite", "detail": "Rewriting your question…"}
+                yield {"type": "status", "stage": "rewrite", "detail": "Refining query from conversation…"}
                 rewritten_query = QueryRewriter.rewrite_conversational_query(history, message, provider=llm)
-                if rewritten_query and rewritten_query.strip() and rewritten_query.strip() != message.strip():
-                    yield {"type": "status", "stage": "rewrite", "detail": f"Rewrote: “{rewritten_query.strip()}”"}
             else:
                 rewritten_query = message
 
             hyde_passage = None
             if llm is not None and len(message.split()) >= 4:
-                yield {"type": "status", "stage": "hyde", "detail": "Building a search passage…"}
                 hyde_passage = QueryRewriter.generate_hyde(rewritten_query or message, provider=llm)
-                if hyde_passage:
-                    yield {"type": "status", "stage": "hyde", "detail": "Search passage ready"}
 
-            yield {"type": "status", "stage": "retrieve", "detail": "Searching your documents…"}
+            yield {"type": "status", "stage": "retrieve", "detail": "Searching local knowledge…"}
             hits = retrieve(
                 workspace_id=workspace_id,
                 query=message,
@@ -419,6 +420,15 @@ def stream_answer_query(
                 hyde_passage=hyde_passage,
             )
             context, citations = build_context(hits)
+            yield {
+                "type": "status",
+                "stage": "retrieve",
+                "detail": (
+                    f"Found {len(citations)} relevant excerpt{'s' if len(citations) != 1 else ''}"
+                    if citations
+                    else "No matching local excerpts found"
+                ),
+            }
 
             from .agent.orchestrator import AgenticOrchestrator
 
@@ -429,6 +439,13 @@ def stream_answer_query(
                 if web_context:
                     context = f"{context}\n\n{web_context}" if context else web_context
                     citations = citations + web_citations
+                yield {
+                    "type": "status",
+                    "stage": "web",
+                    "detail": f"Found {len(web_citations)} web source{'s' if len(web_citations) != 1 else ''}",
+                }
+    else:
+        yield {"type": "status", "stage": "route", "detail": "Preparing direct response…"}
 
     if not citations:
         # No grounding → conversational answer, or a clear error if no model is
@@ -443,6 +460,7 @@ def stream_answer_query(
                    "output_tokens": estimate_tokens(answer)}
             return
 
+        yield {"type": "status", "stage": "process", "detail": "Processing & generating response…"}
         provider_name, model_name = llm.name, llm.model
         yield {"type": "init", "citations": [], "provider": provider_name, "model": model_name, "degraded": False}
         chunks: list[str] = []
@@ -497,6 +515,7 @@ def stream_answer_query(
 
     memory_context = ""
     if db is not None and save_to_memory:
+        yield {"type": "status", "stage": "memory", "detail": "Checking workspace memory…"}
         try:
             from .memory import MemoryService
 
@@ -512,6 +531,7 @@ def stream_answer_query(
     prompt_parts.append(f"Question: {message}\n\nContext:\n{context[:MAX_CONTEXT_CHARS]}")
     user_prompt = "\n\n".join(prompt_parts)
 
+    yield {"type": "status", "stage": "process", "detail": "Processing context & generating response…"}
     yield {
         "type": "init",
         "citations": [],

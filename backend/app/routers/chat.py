@@ -389,6 +389,20 @@ def chat_stream(
                     final_result = event
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as exc:
+            try:
+                db.rollback()
+                AuditService.record(
+                    db=db,
+                    event_type="chat.query",
+                    summary=f"Streaming query failed in workspace {req.workspace_id}: {exc}",
+                    status="failure",
+                    trace_id=trace_id,
+                    workspace_id=req.workspace_id,
+                    metadata={"error": str(exc), "streaming": True},
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
             err_event = {
                 "type": "error",
                 "error": str(exc),

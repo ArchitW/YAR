@@ -56,12 +56,11 @@ import {
 import { Loader } from "@/components/ui/loader";
 import { Button } from "@/components/ui/button";
 import {
-  ChainOfThought,
-  ChainOfThoughtContent,
-  ChainOfThoughtItem,
-  ChainOfThoughtStep,
-  ChainOfThoughtTrigger,
-} from "@/components/ui/chain-of-thought";
+  Steps,
+  StepsContent,
+  StepsItem,
+  StepsTrigger,
+} from "@/components/ui/steps";
 
 const API_BASE = "http://localhost:8000";
 
@@ -581,6 +580,21 @@ export default function App() {
                 }
                 return next;
               });
+            } else if (event.type === "error") {
+              setStatusText("");
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last && last.role === "assistant") {
+                  next[next.length - 1] = {
+                    ...last,
+                    text: event.error ? `Error: ${event.error}` : "Streaming request failed.",
+                    steps: (last.steps || []).map((s) => ({ ...s, status: "done" as const })),
+                    degraded: true,
+                  };
+                }
+                return next;
+              });
             }
           } catch {
             // Ignore partial JSON parse errors
@@ -908,38 +922,49 @@ export default function App() {
                     )}
 
                     {!isUser && m.steps && m.steps.length > 0 && (
-                      <ChainOfThought className="mb-3 rounded-xl bg-slate-50/80 border border-slate-200/80 px-3 py-2">
-                        <ChainOfThoughtStep defaultOpen={!m.text} isLast>
-                          <ChainOfThoughtTrigger
-                            leftIcon={
-                              isLastAssistant && m.steps.some((s) => s.status === "running") ? (
-                                <Loader2 className="size-3.5 animate-spin text-blue-600" />
+                      <Steps
+                        defaultOpen={!m.text}
+                        className="mb-3 rounded-xl bg-slate-50/80 border border-slate-200/80 px-3 py-2"
+                      >
+                        <StepsTrigger
+                          leftIcon={
+                            isLastAssistant && m.steps.some((s) => s.status === "running") ? (
+                              <Loader variant="wave" size="sm" className="text-blue-600" />
+                            ) : (
+                              <Check className="size-3.5 text-emerald-600" />
+                            )
+                          }
+                        >
+                          {isLastAssistant && !m.text ? (
+                            <Loader
+                              variant="text-shimmer"
+                              size="sm"
+                              text={m.steps[m.steps.length - 1]?.detail || "Processing…"}
+                            />
+                          ) : (
+                            `Processed in ${m.steps.length} ${m.steps.length === 1 ? "step" : "steps"}`
+                          )}
+                        </StepsTrigger>
+                        <StepsContent>
+                          {m.steps.map((step, sIdx) => (
+                            <StepsItem
+                              key={`${step.stage}-${sIdx}`}
+                              className="text-slate-600"
+                            >
+                              {step.status === "running" ? (
+                                <Loader
+                                  variant="pulse-dot"
+                                  size="sm"
+                                  className="bg-blue-600 shrink-0"
+                                />
                               ) : (
-                                <Brain className="size-3.5 text-slate-500" />
-                              )
-                            }
-                          >
-                            {isLastAssistant && !m.text
-                              ? m.steps[m.steps.length - 1]?.detail || "Thinking…"
-                              : `Thought process (${m.steps.length} ${m.steps.length === 1 ? "step" : "steps"})`}
-                          </ChainOfThoughtTrigger>
-                          <ChainOfThoughtContent>
-                            {m.steps.map((step, sIdx) => (
-                              <ChainOfThoughtItem
-                                key={`${step.stage}-${sIdx}`}
-                                className="flex items-center gap-2 text-slate-600"
-                              >
-                                {step.status === "running" ? (
-                                  <Loader2 className="size-3 animate-spin text-blue-600 shrink-0" />
-                                ) : (
-                                  <Check className="size-3 text-emerald-600 shrink-0" />
-                                )}
-                                <span>{step.detail}</span>
-                              </ChainOfThoughtItem>
-                            ))}
-                          </ChainOfThoughtContent>
-                        </ChainOfThoughtStep>
-                      </ChainOfThought>
+                                <Check className="size-3 text-emerald-600 shrink-0" />
+                              )}
+                              <span>{step.detail}</span>
+                            </StepsItem>
+                          ))}
+                        </StepsContent>
+                      </Steps>
                     )}
 
                     {isUser ? (
@@ -949,15 +974,17 @@ export default function App() {
                     ) : isLastAssistant && !m.text ? (
                       (!m.steps || m.steps.length === 0) && (
                         <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-blue-50/90 border border-blue-200 text-blue-800">
-                          <Loader variant="typing" size="sm" className="text-blue-600 shrink-0" />
+                          <Loader variant="wave" size="sm" className="text-blue-600 shrink-0" />
                           <div className="flex flex-col">
-                            <span className="text-sm font-medium">
-                              {statusText || "Retrieving context & generating response…"}
-                            </span>
+                            <Loader
+                              variant="text-shimmer"
+                              size="sm"
+                              text={statusText || "Processing your request…"}
+                            />
                             <span className="text-[11px] text-blue-600/80">
                               {activeChat?.use_local_knowledge
-                                ? "Searching workspace knowledge base"
-                                : "Preparing response"}
+                                ? "Preparing local knowledge search"
+                                : "Preparing direct response"}
                             </span>
                           </div>
                         </div>
