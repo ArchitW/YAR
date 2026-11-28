@@ -11,6 +11,14 @@ services:
       WEB_SEARCH_ENABLED: "true"
     volumes:
       - uploads_data:/app/uploads
+      - hf_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')\""]
       interval: 10s
@@ -36,6 +44,14 @@ services:
       WEB_SEARCH_ENABLED: "true"
     volumes:
       - uploads_data:/app/uploads
+      - hf_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,3 +119,4 @@ volumes:
   pgdata:
   qdrant_data:
   uploads_data:
+  hf_cache:

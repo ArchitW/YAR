@@ -444,6 +444,7 @@ def chat_stream(
                         "faithfulness_score": final_result.get("faithfulness_score"),
                         "hallucination_detected": final_result.get("hallucination_detected", False),
                         "unsupported_claims": final_result.get("unsupported_claims", []),
+                        "timings_ms": final_result.get("timings_ms"),
                         "streaming": True,
                     },
                 )

@@ -19,6 +19,7 @@ dist-ssr/
 backend/yar.db
 backend/yar.db-journal
 backend/qdrant_data/
+.qdrant/
 backend/uploads/*
 !backend/uploads/.gitkeep
 

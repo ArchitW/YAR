@@ -14,6 +14,11 @@ def get_reranker() -> CrossEncoder:
         device = detect_torch_device()
         logger.info("Loading reranker BAAI/bge-reranker-base on device=%s", device)
         _reranker = CrossEncoder("BAAI/bge-reranker-base", device=device)
+        if device == "cuda":
+            try:
+                _reranker.model.half()
+            except Exception:
+                pass
     return _reranker
 
 
@@ -29,7 +34,13 @@ def rerank(query: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     try:
         r = get_reranker()
         pairs = [(query, c.get("text", c.get("chunk_text", ""))) for c in candidates]
-        scores = r.predict(pairs)
+        try:
+            import torch
+
+            with torch.inference_mode():
+                scores = r.predict(pairs, batch_size=32, show_progress_bar=False)
+        except ImportError:
+            scores = r.predict(pairs, batch_size=32, show_progress_bar=False)
         for c, s in zip(candidates, scores):
             c["rerank_score"] = float(s)
         candidates.sort(key=lambda x: x["rerank_score"], reverse=True)

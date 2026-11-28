@@ -50,6 +50,39 @@ def sync_connector_task(self, connector_id: int, workspace_id: int) -> dict[str,
         db.close()
 
 
+@celery_app.task(name="app.tasks.index_document_task", bind=True)
+def index_document_task(
+    self,
+    document_id: int,
+    file_path: str,
+    content_type: str | None = None,
+    index_to_master: bool = False,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """Background task to extract, chunk, embed, and index an uploaded document."""
+    db = SessionLocal()
+    try:
+        from .routers.documents import index_document_file
+
+        doc = db.get(Document, document_id)
+        if not doc:
+            return {"status": "error", "message": f"Document {document_id} not found"}
+        total_chunks = index_document_file(
+            db=db,
+            doc=doc,
+            file_path=file_path,
+            content_type=content_type,
+            index_to_master=index_to_master,
+            trace_id=trace_id,
+        )
+        return {"status": doc.status, "document_id": document_id, "total_chunks": total_chunks}
+    except Exception as ex:
+        logger.exception("Failed to run index_document_task for %d: %s", document_id, ex)
+        raise self.retry(exc=ex, countdown=30, max_retries=2)
+    finally:
+        db.close()
+
+
 @celery_app.task(name="app.tasks.run_dream_cycle_task", bind=True)
 def run_dream_cycle_task(
     self,

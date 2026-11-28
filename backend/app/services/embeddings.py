@@ -30,11 +30,33 @@ def get_model():
         device = detect_torch_device()
         logger.info("Loading embedding model BAAI/bge-m3 on device=%s", device)
         _model = SentenceTransformer("BAAI/bge-m3", device=device)
+        if device == "cuda":
+            try:
+                _model.half()
+            except Exception:
+                pass
     return _model
 
-def embed(texts: List[str]) -> List[List[float]]:
+
+def embed(texts: List[str], batch_size: int = 32) -> List[List[float]]:
     m = get_model()
-    return m.encode(texts, normalize_embeddings=True).tolist()
+    try:
+        import torch
+
+        with torch.inference_mode():
+            return m.encode(
+                texts,
+                batch_size=batch_size,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            ).tolist()
+    except ImportError:
+        return m.encode(
+            texts,
+            batch_size=batch_size,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        ).tolist()
 
 def embed_sparse(text: str) -> Dict[str, List[Any]]:
     """Generate a sparse lexical vector with 31-bit hashing and sublinear TF scaling.
@@ -117,16 +139,18 @@ def embed_late_chunks(
         offsets = inputs["offset_mapping"][0].tolist()
         model_inputs = {k: v.to(device) for k, v in inputs.items() if k != "offset_mapping"}
 
-        with torch.no_grad():
+        with torch.inference_mode():
             out = transformer_module.auto_model(**model_inputs)
             token_embeds = out.last_hidden_state[0]  # shape: (seq_len, hidden_dim)
 
-        chunk_embeddings: list[list[float]] = []
+        chunk_embeddings: list[list[float] | None] = [None] * len(chunks)
+        fallback_indices: list[int] = []
         for i, chunk in enumerate(chunks):
             ref_chunk = search_chunks[i] if i < len(search_chunks) else chunk
             c_start = full_text.find(ref_chunk)
             if c_start == -1:
-                c_start = 0
+                fallback_indices.append(i)
+                continue
             c_end = c_start + len(ref_chunk)
 
             # Locate token indices that overlap the chunk character span
@@ -137,11 +161,16 @@ def embed_late_chunks(
                 span_embeds = token_embeds[tok_indices[0] : tok_indices[-1] + 1]
                 pooled = span_embeds.mean(dim=0)
                 norm = torch.nn.functional.normalize(pooled, p=2, dim=0)
-                chunk_embeddings.append(norm.cpu().tolist())
+                chunk_embeddings[i] = norm.cpu().tolist()
             else:
-                chunk_embeddings.append(embed([chunk])[0])
+                fallback_indices.append(i)
 
-        return chunk_embeddings
+        if fallback_indices:
+            fallback_vecs = embed([chunks[i] for i in fallback_indices], batch_size=32)
+            for idx, vec in zip(fallback_indices, fallback_vecs):
+                chunk_embeddings[idx] = vec
+
+        return [vec for vec in chunk_embeddings if vec is not None]
     except Exception as exc:
         import logging
 

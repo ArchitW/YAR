@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Iterator
 
 from .providers import LLMProvider, ProviderError, get_provider
@@ -373,6 +374,9 @@ def stream_answer_query(
     - {"type": "token", "token": "..."}
     - {"type": "done", "answer": "...", "citations": [...], ...}
     """
+    timings_ms: dict[str, float] = {}
+    t_stream_start = time.perf_counter()
+
     llm = provider or get_provider()
 
     context = ""
@@ -382,7 +386,9 @@ def stream_answer_query(
         from .router import classify_query, route_query
 
         yield {"type": "status", "stage": "route", "detail": "Understanding your question…"}
+        t0 = time.perf_counter()
         route = route_query(message).get("route") or classify_query(message).get("route")
+        timings_ms["route_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
 
         if route == "general_chat":
             yield {"type": "status", "stage": "route", "detail": "Answering from general knowledge"}
@@ -412,6 +418,7 @@ def stream_answer_query(
                 hyde_passage = QueryRewriter.generate_hyde(rewritten_query or message, provider=llm)
 
             yield {"type": "status", "stage": "retrieve", "detail": "Searching local knowledge…"}
+            t0 = time.perf_counter()
             hits = retrieve(
                 workspace_id=workspace_id,
                 query=message,
@@ -420,6 +427,7 @@ def stream_answer_query(
                 hyde_passage=hyde_passage,
             )
             context, citations = build_context(hits)
+            timings_ms["retrieve_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
             yield {
                 "type": "status",
                 "stage": "retrieve",
@@ -541,16 +549,26 @@ def stream_answer_query(
     }
 
     chunks: list[str] = []
+    t_llm_start = time.perf_counter()
+    ttft_ms: float | None = None
     try:
         stream_fn = getattr(llm, "stream_complete", None)
         if callable(stream_fn):
             for token in stream_fn(SYSTEM_PROMPT, user_prompt):
+                if ttft_ms is None:
+                    ttft_ms = round((time.perf_counter() - t_llm_start) * 1000.0, 1)
                 chunks.append(token)
                 yield {"type": "token", "token": token}
         else:
             full_text = llm.complete(SYSTEM_PROMPT, user_prompt)
+            ttft_ms = round((time.perf_counter() - t_llm_start) * 1000.0, 1)
             chunks.append(full_text)
             yield {"type": "token", "token": full_text}
+        timings_ms["llm_ms"] = round((time.perf_counter() - t_llm_start) * 1000.0, 1)
+        if ttft_ms is not None:
+            timings_ms["ttft_ms"] = ttft_ms
+        timings_ms["total_ms"] = round((time.perf_counter() - t_stream_start) * 1000.0, 1)
+        logger.info("stream_answer_query workspace=%s timings_ms=%s", workspace_id, timings_ms)
 
         answer = "".join(chunks)
         stream_degraded = False
@@ -593,6 +611,7 @@ def stream_answer_query(
             "unsupported_claims": faithfulness.unsupported_claims,
             "input_tokens": estimate_tokens(SYSTEM_PROMPT) + estimate_tokens(user_prompt),
             "output_tokens": estimate_tokens(answer),
+            "timings_ms": timings_ms,
         }
     except ProviderError:
         logger.warning(

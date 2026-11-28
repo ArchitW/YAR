@@ -1,13 +1,16 @@
+import logging
 import os
+import time
 from typing import Any, Dict, List
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, SparseVector
 
-from ..core.config import get_qdrant_client
+from ..core.config import get_qdrant_client, reranker_settings
 from ..services.embeddings import embed, embed_sparse
 from ..services.reranker import rerank
 
+logger = logging.getLogger(__name__)
 qdrant = get_qdrant_client()
 COLLECTION = "yar_chunks"
 
@@ -106,10 +109,19 @@ def retrieve(
     all_scores: dict[Any, float] = {}
     payload_map: dict[Any, dict[str, Any]] = {}
 
+    t_start = time.perf_counter()
+    embed_ms = 0.0
+    qdrant_ms = 0.0
+    rerank_ms = 0.0
+
     # 1. Semantic search: encode natural language query (and optional HyDE passage)
     if run_dense:
+        t0 = time.perf_counter()
         dvec = embed([search_query])[0]
+        embed_ms += (time.perf_counter() - t0) * 1000.0
+        t0 = time.perf_counter()
         dense_res = _query_qdrant(qdrant, dvec, using="dense", query_filter=ws_filter, limit=20)
+        qdrant_ms += (time.perf_counter() - t0) * 1000.0
         for rank, r in enumerate(dense_res):
             pid = r.id
             all_scores[pid] = all_scores.get(pid, 0.0) + 1.0 / (60 + rank)
@@ -117,8 +129,12 @@ def retrieve(
 
         # If HyDE hypothetical passage is provided, execute secondary dense probe
         if hyde_passage and hyde_passage.strip():
+            t0 = time.perf_counter()
             hyde_vec = embed([hyde_passage.strip()])[0]
+            embed_ms += (time.perf_counter() - t0) * 1000.0
+            t0 = time.perf_counter()
             hyde_res = _query_qdrant(qdrant, hyde_vec, using="dense", query_filter=ws_filter, limit=20)
+            qdrant_ms += (time.perf_counter() - t0) * 1000.0
             for rank, r in enumerate(hyde_res):
                 pid = r.id
                 all_scores[pid] = all_scores.get(pid, 0.0) + 1.0 / (60 + rank)
@@ -127,6 +143,7 @@ def retrieve(
     # 2. Sparse lexical search: run across keyword-expanded variants of search_query
     if run_sparse:
         variants = rewrite_query(search_query)
+        t0 = time.perf_counter()
         for v in variants:
             sp = embed_sparse(v)
             if not sp["indices"]:
@@ -142,6 +159,7 @@ def retrieve(
                 pid = r.id
                 all_scores[pid] = all_scores.get(pid, 0.0) + 1.0 / (60 + rank)
                 payload_map[pid] = r.payload or {}
+        qdrant_ms += (time.perf_counter() - t0) * 1000.0
 
     cands: list[dict[str, Any]] = []
     for pid, sc in all_scores.items():
@@ -173,5 +191,20 @@ def retrieve(
             "dream_title": pl.get("dream_title"),
         })
 
-    cands = rerank(search_query, cands)
+    rr = reranker_settings()
+    if rr["enabled"]:
+        t0 = time.perf_counter()
+        cands = rerank(search_query, cands[: rr["top_k"]])
+        rerank_ms = (time.perf_counter() - t0) * 1000.0
+    total_ms = (time.perf_counter() - t_start) * 1000.0
+    logger.info(
+        "retrieve workspace=%s mode=%s hits=%d embed_ms=%.1f qdrant_ms=%.1f rerank_ms=%.1f total_ms=%.1f",
+        workspace_id,
+        mode,
+        len(cands[:top_k]),
+        embed_ms,
+        qdrant_ms,
+        rerank_ms,
+        total_ms,
+    )
     return cands[:top_k]

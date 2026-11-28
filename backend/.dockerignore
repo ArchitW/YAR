@@ -1,0 +1,11 @@
+.env
+.env.*
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+yar.db
+yar.db-*
+qdrant_data/
+uploads/
+.pytest_cache/

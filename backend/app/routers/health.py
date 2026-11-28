@@ -11,7 +11,14 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from qdrant_client import QdrantClient
 
-from ..core.config import QDRANT_PATH, QDRANT_URL, REDIS_URL, get_qdrant_client
+from ..core.config import (
+    QDRANT_PATH,
+    QDRANT_URL,
+    REDIS_URL,
+    detect_torch_device,
+    get_qdrant_client,
+    qdrant_mode,
+)
 from ..core.database import get_db
 from ..core.log_stream import log_stream_handler
 
@@ -34,6 +41,15 @@ def check_redis() -> tuple[str, str | None]:
         return "error", "Ping returned False"
     except Exception as ex:
         return "error", str(ex)
+
+
+def compute_info() -> dict[str, Any]:
+    """Report the actual compute device so CPU-only deployments are visible."""
+    try:
+        device = detect_torch_device()
+    except Exception as ex:  # pragma: no cover - torch is optional at import time
+        return {"device": "unknown", "gpu": False, "error": str(ex)}
+    return {"device": device, "gpu": device != "cpu"}
 
 
 def check_qdrant() -> tuple[str, str | None]:
@@ -69,6 +85,8 @@ def health_check(response: Response, db: Session = Depends(get_db)) -> dict[str,
     return {
         "status": overall,
         "services": services,
+        "compute": compute_info(),
+        "retrieval": {"mode": qdrant_mode()},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
