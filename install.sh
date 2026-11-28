@@ -57,14 +57,22 @@ CrossEncoder("BAAI/bge-reranker-base", device="cpu")
 print("Models cached successfully.")
 '
 
+# Fetch the local Qdrant server binary (self-hosted retrieval).
+echo "==> Fetching local Qdrant binary..."
+if ! "$ROOT/scripts/qdrant.sh" download; then
+  echo "Warning: could not fetch Qdrant now. ./scripts/qdrant.sh start will retry." >&2
+fi
+
 # Local no-Docker defaults in backend/.env (only if not already configured)
 if [ ! -f "$ROOT/backend/.env" ]; then
   echo "==> Creating backend/.env with local no-Docker defaults..."
   cp "$ROOT/.env.example" "$ROOT/backend/.env"
   {
     echo ""
-    echo "# Embedded local-disk Qdrant (no Docker Qdrant server required)"
-    echo "QDRANT_PATH=./qdrant_data"
+    echo "# Local Qdrant server (auto-started by ./start.sh via scripts/qdrant.sh)"
+    echo "QDRANT_URL=http://localhost:6333"
+    echo "# Embedded on-disk mode is only for small dev sets (no ANN index):"
+    echo "# QDRANT_PATH=./qdrant_data"
   } >> "$ROOT/backend/.env"
 fi
 

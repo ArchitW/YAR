@@ -29,6 +29,11 @@ def get_qdrant_client() -> Any:
     return _qdrant_client
 
 
+def qdrant_mode() -> str:
+    """Return 'local' for embedded on-disk Qdrant, otherwise 'server'."""
+    return "local" if QDRANT_PATH else "server"
+
+
 def detect_torch_device() -> str:
     """Return the best available PyTorch compute device ('cuda', 'mps', or 'cpu')."""
     try:

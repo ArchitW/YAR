@@ -18,9 +18,10 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    PayloadSchemaType,
 )
 from ..core.database import get_db
-from ..core.config import UPLOAD_DIR, get_qdrant_client
+from ..core.config import UPLOAD_DIR, get_qdrant_client, qdrant_mode
 from ..core.middleware import get_request_trace_id
 from ..models.document import Document
 from ..services.audit import AuditService
@@ -36,6 +37,10 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 qdrant = get_qdrant_client()
 COLLECTION = "yar_chunks"
 
+# Local (embedded) mode has no ANN index and is not recommended above this size.
+LOCAL_MODE_WARN_POINTS = 20_000
+
+
 def ensure_collection(client: Any | None = None):
     target = client or qdrant
     try:
@@ -45,6 +50,29 @@ def ensure_collection(client: Any | None = None):
                 vectors_config={"dense": VectorParams(size=1024, distance=Distance.COSINE)},
                 sparse_vectors_config={"sparse": SparseVectorParams()},
             )
+
+        # Payload indexes keep workspace/master filtering O(index) instead of a scan.
+        for field, schema in (
+            ("workspace_id", PayloadSchemaType.INTEGER),
+            ("is_master", PayloadSchemaType.BOOL),
+        ):
+            try:
+                target.create_payload_index(COLLECTION, field, field_schema=schema)
+            except Exception:
+                logger.debug("Payload index %s not created (already exists or unsupported)", field)
+
+        if qdrant_mode() == "local":
+            try:
+                count = target.get_collection(COLLECTION).points_count or 0
+            except Exception:
+                count = 0
+            if count > LOCAL_MODE_WARN_POINTS:
+                logger.warning(
+                    "Embedded Qdrant holds %s points; local mode is not recommended above %s. "
+                    "Set QDRANT_URL (server mode) for scalable retrieval.",
+                    count,
+                    LOCAL_MODE_WARN_POINTS,
+                )
     except Exception:
         logger.warning("Failed to verify/create Qdrant collection", exc_info=True)
 

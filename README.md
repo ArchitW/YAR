@@ -132,13 +132,21 @@ Requires Python 3.11+ and Node.js 18+.
    ./install.sh
    ```
 
-2. Start both the Backend API and Frontend UI:
+2. Start the Backend API and Frontend UI:
 
    ```bash
    ./start.sh
    ```
 
+   `start.sh` also starts a local Qdrant server (downloaded on first run to `.qdrant/`). Manage it directly with:
+
+   ```bash
+   ./scripts/qdrant.sh start|stop|status
+   ```
+
    > **Data persistence:** All data is stored locally on disk — SQLite database at `backend/yar.db`, Qdrant vectors at `backend/qdrant_data/`, and uploaded files at `backend/uploads/`. Optional background Celery workers and SearXNG web search require Redis/SearXNG (or Option 1).
+
+   > **Retrieval mode:** the default is a Qdrant server (`QDRANT_URL`) with an ANN index, which is what you need beyond ~20k chunks. For a small offline dev set you can set `QDRANT_PATH=./qdrant_data` in `backend/.env` to use embedded mode instead — it is brute-force and will not scale.
 
 ### Access Links
 
