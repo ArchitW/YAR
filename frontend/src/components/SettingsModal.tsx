@@ -2,11 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
   AlertCircle,
+  AlertTriangle,
   Brain,
   CheckCircle2,
   Cpu,
-  Eye,
-  EyeOff,
   Files,
   Globe,
   HardDrive,
@@ -15,10 +14,14 @@ import {
   Settings,
   Shield,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { ModelsStatus } from "./ModelSettingsPanel";
+import LLMProvidersPanel from "./LLMProvidersPanel";
 import DocumentList from "./DocumentList";
+import DocumentDropzone from "./DocumentDropzone";
 import { DocumentItem } from "../types";
 
 export type SettingsTab = "models" | "retrieval" | "memory" | "security" | "system" | "master";
@@ -31,6 +34,8 @@ interface FullSettings {
   ollama_base_url: string;
   ollama_autodiscover: boolean;
   ollama_timeout: number;
+  embedding_model: string;
+  reranker_model: string;
   query_rewrite_enabled: boolean;
   hyde_enabled: boolean;
   web_search_enabled: boolean;
@@ -88,15 +93,6 @@ interface SettingsModalProps {
   onModelsUpdated: (updated: ModelsStatus) => void;
 }
 
-const PROVIDERS = [
-  { id: "local", label: "Local (Ollama)", baseUrl: "http://localhost:11434/v1", defaultModel: "llama3.2" },
-  { id: "gemini", label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", defaultModel: "gemini-2.5-flash" },
-  { id: "qwen", label: "Qwen (DashScope)", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", defaultModel: "qwen-plus" },
-  { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini" },
-  { id: "lmstudio", label: "LM Studio / vLLM", baseUrl: "http://localhost:1234/v1", defaultModel: "" },
-  { id: "custom", label: "Custom Endpoint", baseUrl: "", defaultModel: "" },
-];
-
 const TABS: { id: SettingsTab; label: string; icon: any }[] = [
   { id: "models", label: "Models & Providers", icon: Cpu },
   { id: "master", label: "Master Knowledge", icon: Files },
@@ -106,17 +102,143 @@ const TABS: { id: SettingsTab; label: string; icon: any }[] = [
   { id: "system", label: "System & Storage", icon: HardDrive },
 ];
 
-function detectProviderId(url: string): string {
-  const normalized = url.trim().replace(/\/+$/, "");
-  const match = PROVIDERS.find((p) => p.baseUrl && p.baseUrl === normalized);
-  return match ? match.id : normalized ? "custom" : "local";
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+/* ---------- Presentational primitives ---------- */
+
+const inputClass =
+  "w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg text-slate-800 placeholder:text-slate-400 transition-shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:border-blue-400";
+
+function Field({
+  label,
+  htmlFor,
+  hint,
+  children,
+  className,
+}: {
+  label: string;
+  htmlFor?: string;
+  hint?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={className}>
+      <label htmlFor={htmlFor} className="block text-xs font-medium text-slate-700 mb-1.5">
+        {label}
+      </label>
+      {children}
+      {hint && <p className="mt-1.5 text-[11px] leading-snug text-slate-500">{hint}</p>}
+    </div>
+  );
+}
+
+function Switch({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2",
+        checked ? "bg-blue-600" : "bg-slate-300"
+      )}
+    >
+      <span
+        className={cn(
+          "inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform",
+          checked ? "translate-x-[18px]" : "translate-x-0.5"
+        )}
+      />
+    </button>
+  );
+}
+
+function ToggleRow({
+  checked,
+  onChange,
+  title,
+  description,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 p-3.5 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-colors">
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-slate-800">{title}</div>
+        <div className="text-xs text-slate-500 mt-0.5 leading-snug">{description}</div>
+      </div>
+      <Switch checked={checked} onChange={onChange} label={title} />
+    </div>
+  );
+}
+
+function SectionCard({
+  title,
+  description,
+  icon: Icon,
+  children,
+  footer,
+}: {
+  title: string;
+  description?: string;
+  icon?: any;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+}) {
+  return (
+    <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <header className="flex items-start gap-3 px-5 pt-5 pb-4">
+        {Icon && (
+          <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600 ring-1 ring-blue-100 shrink-0">
+            <Icon className="h-4 w-4" aria-hidden="true" />
+          </span>
+        )}
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+          {description && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{description}</p>}
+        </div>
+      </header>
+      <div className="px-5 pb-5 space-y-4">{children}</div>
+      {footer && (
+        <footer className="flex items-center justify-end gap-2 px-5 py-3.5 bg-slate-50/70 border-t border-slate-100">
+          {footer}
+        </footer>
+      )}
+    </section>
+  );
+}
+
+function StatCard({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/60">
+      <div className="text-[11px] font-medium text-slate-500">{label}</div>
+      <div className={cn("text-xl font-semibold font-mono tabular-nums mt-1", tone)}>{value}</div>
+    </div>
+  );
+}
+
+const primaryBtn =
+  "inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none";
+const ghostBtn =
+  "inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none";
 
 export default function SettingsModal({
   isOpen,
@@ -130,21 +252,13 @@ export default function SettingsModal({
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
-
-  // Settings form state
-  const [providerId, setProviderId] = useState("local");
-  const [llmBaseUrl, setLlmBaseUrl] = useState("");
-  const [llmModel, setLlmModel] = useState("");
-  const [llmApiKey, setLlmApiKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
-  const [llmTimeout, setLlmTimeout] = useState("60");
-  const [hasApiKey, setHasApiKey] = useState(false);
 
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("http://localhost:11434");
   const [ollamaAutodiscover, setOllamaAutodiscover] = useState(true);
   const [ollamaTimeout, setOllamaTimeout] = useState(3);
+  const [embModel, setEmbModel] = useState("BAAI/bge-small-en-v1.5");
+  const [rrModel, setRrModel] = useState("cross-encoder/ettin-reranker-17m-v1");
 
   const [queryRewrite, setQueryRewrite] = useState(true);
   const [hydeEnabled, setHydeEnabled] = useState(false);
@@ -163,9 +277,10 @@ export default function SettingsModal({
   const [dreamStatus, setDreamStatus] = useState<DreamStatus | null>(null);
   const [dreaming, setDreaming] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditItem[]>([]);
-  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [masterDocs, setMasterDocs] = useState<DocumentItem[]>([]);
   const [masterLoading, setMasterLoading] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const loadMasterDocs = useCallback(async () => {
     setMasterLoading(true);
@@ -201,6 +316,12 @@ export default function SettingsModal({
     }
   }, [isOpen, initialTab]);
 
+  useEffect(() => {
+    if (!feedback) return;
+    const t = setTimeout(() => setFeedback(null), 4000);
+    return () => clearTimeout(t);
+  }, [feedback]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
@@ -214,16 +335,11 @@ export default function SettingsModal({
       if (sRes.ok) {
         const s: FullSettings = await sRes.json();
         setSystemInfo(s);
-        const url = s.llm_base_url || "http://localhost:11434/v1";
-        setProviderId(detectProviderId(url));
-        setLlmBaseUrl(url);
-        setLlmModel(s.llm_model || "");
-        setLlmTimeout(s.llm_timeout || "60");
-        setHasApiKey(s.has_api_key);
-        setLlmApiKey("");
         setOllamaBaseUrl(s.ollama_base_url || "http://localhost:11434");
         setOllamaAutodiscover(s.ollama_autodiscover);
         setOllamaTimeout(s.ollama_timeout);
+        setEmbModel(s.embedding_model || "BAAI/bge-small-en-v1.5");
+        setRrModel(s.reranker_model || "cross-encoder/ettin-reranker-17m-v1");
         setQueryRewrite(s.query_rewrite_enabled);
         setHydeEnabled(s.hyde_enabled);
         setWebSearchEnabled(s.web_search_enabled);
@@ -251,11 +367,8 @@ export default function SettingsModal({
   }, [apiBase, workspaceId]);
 
   useEffect(() => {
-    if (isOpen) {
-      loadAll();
-      setDiscoveredModels(modelsStatus?.local_models || []);
-    }
-  }, [isOpen, loadAll, modelsStatus]);
+    if (isOpen) loadAll();
+  }, [isOpen, loadAll]);
 
   if (!isOpen) return null;
 
@@ -274,9 +387,7 @@ export default function SettingsModal({
       }
       const updated: FullSettings = await res.json();
       setSystemInfo(updated);
-      setHasApiKey(updated.has_api_key);
       setHasJwtSecret(updated.has_jwt_secret);
-      setLlmApiKey("");
       setNewJwtSecret("");
       setFeedback({ type: "success", message: successMsg });
 
@@ -286,33 +397,6 @@ export default function SettingsModal({
       setFeedback({ type: "error", message: err?.message || "Failed to save settings." });
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setTesting(true);
-    setFeedback(null);
-    try {
-      const res = await fetch(`${apiBase}/chat/models/test`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          base_url: llmBaseUrl.trim(),
-          model: llmModel.trim(),
-          api_key: llmApiKey.trim(),
-          timeout: 5.0,
-        }),
-      });
-      const data = await res.json();
-      if (data.models?.length) setDiscoveredModels(data.models);
-      setFeedback({
-        type: data.ok ? "success" : "error",
-        message: data.detail || (data.ok ? "Connection succeeded." : "Connection failed."),
-      });
-    } catch {
-      setFeedback({ type: "error", message: "Could not reach backend to test connection." });
-    } finally {
-      setTesting(false);
     }
   };
 
@@ -349,29 +433,53 @@ export default function SettingsModal({
     }
   };
 
-  const allSuggestions = Array.from(new Set([...(modelsStatus?.local_models || []), ...discoveredModels]));
+  const handleResetEverything = async () => {
+    setResetting(true);
+    setFeedback(null);
+    try {
+      const res = await fetch(`${apiBase}/settings/reset`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setFeedback({ type: "success", message: "Reset complete. Reloading…" });
+      setTimeout(() => window.location.assign("/"), 800);
+    } catch {
+      setResetting(false);
+      setConfirmReset(false);
+      setFeedback({ type: "error", message: "Failed to reset. Please try again." });
+    }
+  };
 
   return (
-    <div className="fixed inset-0 z-50 bg-white flex items-stretch justify-center">
-      <div className="w-full max-w-6xl h-full flex flex-col overflow-hidden border-x border-slate-200">
-        {/* Modal Header */}
-        <div className="h-14 px-5 border-b flex items-center justify-between bg-slate-50/80 shrink-0">
-          <div className="flex items-center gap-2.5">
-            <Settings className="w-4 h-4 text-blue-600" />
-            <h2 className="font-semibold text-sm text-slate-800">YAR Settings</h2>
+    <div className="fixed inset-0 z-50 bg-slate-100 flex items-stretch justify-center">
+      <div className="w-full h-full flex flex-col overflow-hidden bg-slate-50 border-x border-slate-200 shadow-xl">
+        {/* Header */}
+        <header className="h-16 px-5 border-b border-slate-200 bg-white flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
+              <Settings className="h-5 w-5" aria-hidden="true" />
+            </span>
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900 leading-tight">Settings</h2>
+              <p className="text-[11px] text-slate-500 leading-tight">Configure YAR models, retrieval, and system</p>
+            </div>
           </div>
           <button
             onClick={onClose}
             aria-label="Close settings"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60"
+            className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70"
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" aria-hidden="true" />
           </button>
-        </div>
+        </header>
 
-        {/* Body: Left Tabs + Right Content */}
+        {/* Body: Sidebar + Content */}
         <div className="flex-1 flex min-h-0">
-          <nav className="w-52 border-r bg-slate-50/50 p-3 space-y-1 shrink-0">
+          <nav
+            aria-label="Settings sections"
+            className="w-60 border-r border-slate-200 bg-white p-3 space-y-1 shrink-0 overflow-y-auto"
+          >
+            <div className="px-3 pt-1 pb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              Configuration
+            </div>
             {TABS.map((tab) => {
               const Icon = tab.icon;
               const active = activeTab === tab.id;
@@ -379,611 +487,608 @@ export default function SettingsModal({
                 <button
                   key={tab.id}
                   type="button"
+                  aria-current={active ? "page" : undefined}
                   onClick={() => {
                     setActiveTab(tab.id);
                     setFeedback(null);
                   }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left ${
+                  className={cn(
+                    "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70",
                     active
-                      ? "bg-blue-50 text-blue-700 border border-blue-200/70"
+                      ? "bg-blue-50 text-blue-700 ring-1 ring-blue-200/70"
                       : "text-slate-600 hover:bg-slate-100"
-                  }`}
+                  )}
                 >
-                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
                   <span>{tab.label}</span>
                 </button>
               );
             })}
           </nav>
 
-          <div className="flex-1 overflow-y-auto p-6 space-y-5">
-            {loading && !systemInfo ? (
-              <div className="flex items-center justify-center py-12 text-xs text-slate-500 gap-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Loading settings...</span>
-              </div>
-            ) : (
-              <>
-                {feedback && (
-                  <div
-                    className={`p-3 rounded-lg text-xs flex items-start gap-2 border ${
-                      feedback.type === "success"
-                        ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                        : "bg-rose-50 text-rose-800 border-rose-200"
-                    }`}
-                  >
-                    {feedback.type === "success" ? (
-                      <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
-                    ) : (
-                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
-                    )}
-                    <span className="break-words">{feedback.message}</span>
-                  </div>
-                )}
+          <div className="flex-1 overflow-y-auto">
+            <div className="max-w-5xl mx-auto p-6 lg:p-8 space-y-6">
+              {loading && !systemInfo ? (
+                <div className="space-y-4" aria-busy="true" aria-live="polite">
+                  <div className="h-28 rounded-2xl bg-white border border-slate-200 animate-pulse" />
+                  <div className="h-40 rounded-2xl bg-white border border-slate-200 animate-pulse" />
+                  <span className="sr-only">Loading settings…</span>
+                </div>
+              ) : (
+                <>
+                  {/* TAB: MODELS */}
+                  {activeTab === "models" && (
+                    <div className="space-y-6">
+                      <LLMProvidersPanel
+                        apiBase={apiBase}
+                        modelsStatus={modelsStatus}
+                        onModelsUpdated={onModelsUpdated}
+                      />
 
-                {/* TAB 1: MODELS */}
-                {activeTab === "models" && (
-                  <div className="space-y-4">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-800">LLM Endpoint & Provider</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Connect any OpenAI-compatible provider or local router. Applies immediately.
-                      </p>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label htmlFor="settings-provider" className="block text-xs font-medium text-slate-700 mb-1">
-                          Provider
-                        </label>
-                        <select
-                          id="settings-provider"
-                          value={providerId}
-                          onChange={(e) => {
-                            const id = e.target.value;
-                            setProviderId(id);
-                            const p = PROVIDERS.find((x) => x.id === id);
-                            if (p?.baseUrl) {
-                              setLlmBaseUrl(p.baseUrl);
-                              if (p.defaultModel) setLlmModel(p.defaultModel);
+                      <SectionCard
+                        icon={Cpu}
+                        title="Embedding & Reranker Models"
+                        description="Small, fast models by default. Changing the embedding model rebuilds the vector index — you'll need to reindex documents."
+                        footer={
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() =>
+                              handleSaveSettings(
+                                { embedding_model: embModel, reranker_model: rrModel },
+                                "Model settings saved. Reindex documents if you changed the embedding model."
+                              )
                             }
-                          }}
-                          className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className={primaryBtn}
+                          >
+                            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                            <span>Save Models</span>
+                          </button>
+                        }
+                      >
+                        <Field
+                          label="Embedding Model"
+                          htmlFor="emb-model"
+                          hint="384-dim small models are fast but English-only (512 tokens). Use bge-m3 for multilingual / 8k context."
                         >
-                          {PROVIDERS.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label htmlFor="settings-timeout" className="block text-xs font-medium text-slate-700 mb-1">
-                          Request Timeout (seconds)
-                        </label>
-                        <input
-                          id="settings-timeout"
-                          type="number"
-                          min={5}
-                          max={600}
-                          value={llmTimeout}
-                          onChange={(e) => setLlmTimeout(e.target.value)}
-                          className="w-full px-3 py-2 text-xs font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label htmlFor="settings-base-url" className="block text-xs font-medium text-slate-700 mb-1">
-                        Endpoint Base URL
-                      </label>
-                      <input
-                        id="settings-base-url"
-                        type="url"
-                        value={llmBaseUrl}
-                        onChange={(e) => {
-                          setLlmBaseUrl(e.target.value);
-                          setProviderId(detectProviderId(e.target.value));
-                        }}
-                        placeholder="http://localhost:11434/v1"
-                        className="w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg"
-                      />
-                    </div>
-
-                    <div>
-                      <label htmlFor="settings-model" className="block text-xs font-medium text-slate-700 mb-1">
-                        Model Name
-                      </label>
-                      <input
-                        id="settings-model"
-                        type="text"
-                        value={llmModel}
-                        onChange={(e) => setLlmModel(e.target.value)}
-                        placeholder="llama3.2"
-                        className="w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg"
-                      />
-                      {allSuggestions.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {allSuggestions.map((m) => (
-                            <button
-                              key={m}
-                              type="button"
-                              onClick={() => setLlmModel(m)}
-                              className={`px-2 py-0.5 text-[11px] font-mono rounded border ${
-                                llmModel === m
-                                  ? "bg-blue-600 text-white border-blue-600"
-                                  : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"
-                              }`}
-                            >
-                              {m}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <label htmlFor="settings-api-key" className="block text-xs font-medium text-slate-700 mb-1">
-                        API Key{" "}
-                        <span className="text-slate-400 font-normal">
-                          {hasApiKey ? "(saved — leave blank to keep)" : "(optional for local)"}
-                        </span>
-                      </label>
-                      <div className="relative">
-                        <input
-                          id="settings-api-key"
-                          type={showKey ? "text" : "password"}
-                          value={llmApiKey}
-                          onChange={(e) => setLlmApiKey(e.target.value)}
-                          placeholder={hasApiKey ? "••••••••••••" : "sk-..."}
-                          className="w-full pr-9 pl-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowKey(!showKey)}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                        >
-                          {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="pt-3 border-t border-slate-100 space-y-3">
-                      <h4 className="text-xs font-semibold text-slate-700">Local Ollama Autodiscovery</h4>
-                      <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={ollamaAutodiscover}
-                          onChange={(e) => setOllamaAutodiscover(e.target.checked)}
-                          className="rounded border-slate-300 text-blue-600"
-                        />
-                        <span>Automatically probe local Ollama daemon for installed models</span>
-                      </label>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <div className="sm:col-span-2">
                           <input
-                            type="url"
-                            value={ollamaBaseUrl}
-                            onChange={(e) => setOllamaBaseUrl(e.target.value)}
-                            placeholder="http://localhost:11434"
-                            className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg"
+                            id="emb-model"
+                            list="emb-presets"
+                            type="text"
+                            value={embModel}
+                            onChange={(e) => setEmbModel(e.target.value)}
+                            className={cn(inputClass, "font-mono")}
+                          />
+                          <datalist id="emb-presets">
+                            {[
+                              "BAAI/bge-small-en-v1.5",
+                              "BAAI/bge-m3",
+                              "Snowflake/snowflake-arctic-embed-xs",
+                              "sentence-transformers/all-MiniLM-L6-v2",
+                              "Alibaba-NLP/gte-multilingual-base",
+                            ].map((m) => (
+                              <option key={m} value={m} />
+                            ))}
+                          </datalist>
+                        </Field>
+                        <Field
+                          label="Reranker Model"
+                          htmlFor="rr-model"
+                          hint="Cross-encoder used to re-rank retrieved candidates. Smaller = faster."
+                        >
+                          <input
+                            id="rr-model"
+                            list="rr-presets"
+                            type="text"
+                            value={rrModel}
+                            onChange={(e) => setRrModel(e.target.value)}
+                            className={cn(inputClass, "font-mono")}
+                          />
+                          <datalist id="rr-presets">
+                            {[
+                              "cross-encoder/ettin-reranker-17m-v1",
+                              "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                              "BAAI/bge-reranker-base",
+                              "jinaai/jina-reranker-v1-tiny-en",
+                              "Horizon-Labs/multilingual-reranker-small",
+                            ].map((m) => (
+                              <option key={m} value={m} />
+                            ))}
+                          </datalist>
+                        </Field>
+                      </SectionCard>
+
+                      <SectionCard
+                        icon={Cpu}
+                        title="Local Ollama Autodiscovery"
+                        description="Probe a local Ollama daemon for installed models when no endpoint is active."
+                        footer={
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() =>
+                              handleSaveSettings(
+                                {
+                                  ollama_base_url: ollamaBaseUrl,
+                                  ollama_autodiscover: ollamaAutodiscover,
+                                  ollama_timeout: ollamaTimeout,
+                                },
+                                "Ollama autodiscovery settings saved."
+                              )
+                            }
+                            className={primaryBtn}
+                          >
+                            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                            <span>Save Ollama Settings</span>
+                          </button>
+                        }
+                      >
+                        <ToggleRow
+                          checked={ollamaAutodiscover}
+                          onChange={setOllamaAutodiscover}
+                          title="Probe local Ollama daemon"
+                          description="Automatically discover installed models from the local daemon."
+                        />
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <Field label="Ollama Base URL" className="sm:col-span-2" htmlFor="ollama-url">
+                            <input
+                              id="ollama-url"
+                              type="url"
+                              value={ollamaBaseUrl}
+                              onChange={(e) => setOllamaBaseUrl(e.target.value)}
+                              placeholder="http://localhost:11434"
+                              className={cn(inputClass, "font-mono")}
+                            />
+                          </Field>
+                          <Field label="Timeout (s)" htmlFor="ollama-timeout">
+                            <input
+                              id="ollama-timeout"
+                              type="number"
+                              step="0.5"
+                              min={0.5}
+                              max={30}
+                              value={ollamaTimeout}
+                              onChange={(e) => setOllamaTimeout(Number(e.target.value))}
+                              className={cn(inputClass, "font-mono tabular-nums")}
+                            />
+                          </Field>
+                        </div>
+                      </SectionCard>
+                    </div>
+                  )}
+
+                  {/* TAB: MASTER KNOWLEDGE */}
+                  {activeTab === "master" && (
+                    <SectionCard
+                      icon={Files}
+                      title="Master Knowledge Base"
+                      description="Documents here are shared across every workspace."
+                    >
+                      <div className="p-4 rounded-xl border border-blue-100 bg-blue-50/50 flex items-start gap-3">
+                        <Files className="w-5 h-5 text-blue-600 shrink-0" aria-hidden="true" />
+                        <div className="text-xs text-slate-600">
+                          <div className="font-medium text-slate-800">{masterDocs.length} master document(s)</div>
+                          <div className="mt-0.5">
+                            Searchable from any workspace, in addition to that workspace’s own files. Upload below, or
+                            edit the extracted text of any document and reindex it.
+                          </div>
+                        </div>
+                      </div>
+
+                      {workspaceId != null && (
+                        <div>
+                          <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                            Add to Master Knowledge
+                          </h4>
+                          <DocumentDropzone
+                            workspaceId={workspaceId}
+                            indexToMaster
+                            onUploadSuccess={loadMasterDocs}
                           />
                         </div>
-                        <input
-                          type="number"
-                          step="0.5"
-                          min={0.5}
-                          max={30}
-                          value={ollamaTimeout}
-                          onChange={(e) => setOllamaTimeout(Number(e.target.value))}
-                          className="w-full px-3 py-1.5 text-xs font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg"
-                        />
-                      </div>
-                    </div>
+                      )}
 
-                    <div className="flex items-center justify-end gap-2 pt-3 border-t">
-                      <button
-                        type="button"
-                        onClick={handleTestConnection}
-                        disabled={testing || !llmBaseUrl.trim()}
-                        className="px-3.5 py-2 text-xs font-medium rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50 flex items-center gap-1.5"
-                      >
-                        {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                        <span>Test Connection</span>
-                      </button>
-                      <button
-                        type="button"
-                        disabled={saving}
-                        onClick={() =>
-                          handleSaveSettings({
-                            llm_base_url: llmBaseUrl,
-                            llm_model: llmModel,
-                            llm_api_key: llmApiKey || undefined,
-                            llm_timeout: llmTimeout,
-                            ollama_base_url: ollamaBaseUrl,
-                            ollama_autodiscover: ollamaAutodiscover,
-                            ollama_timeout: ollamaTimeout,
-                          })
-                        }
-                        className="px-4 py-2 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
-                      >
-                        {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                        <span>Save Models</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
+                      <DocumentList
+                        documents={masterDocs}
+                        isLoading={masterLoading}
+                        onRefresh={loadMasterDocs}
+                        workspaceName="Master Knowledge Base"
+                        onDelete={deleteMasterDoc}
+                        apiBase={apiBase}
+                        editable
+                      />
+                    </SectionCard>
+                  )}
 
-                {/* TAB 2: RETRIEVAL & WEB SEARCH */}
-                {/* TAB: MASTER KNOWLEDGE */}
-                {activeTab === "master" && (
-                  <div className="space-y-4">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-800">Master Knowledge Base</h3>
-                      <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                        Documents here are shared across <span className="font-medium">every</span> workspace.
-                        Upload with “Also add to Master Knowledge Base” checked, or manage the shared set below.
-                      </p>
-                    </div>
-
-                    <div className="p-4 rounded-xl border border-blue-100 bg-blue-50/40 flex items-start gap-3">
-                      <Files className="w-5 h-5 text-blue-600 shrink-0" />
-                      <div className="text-xs text-slate-600">
-                        <div className="font-medium text-slate-800">
-                          {masterDocs.length} master document(s)
-                        </div>
-                        <div className="mt-0.5">
-                          Searchable from any workspace, in addition to that workspace’s own files.
-                        </div>
-                      </div>
-                    </div>
-
-                    <DocumentList
-                      documents={masterDocs}
-                      isLoading={masterLoading}
-                      onRefresh={loadMasterDocs}
-                      workspaceName="Master Knowledge Base"
-                      onDelete={deleteMasterDoc}
-                    />
-                  </div>
-                )}
-
-                {/* TAB 2: RETRIEVAL */}
-                {activeTab === "retrieval" && (
-                  <div className="space-y-5">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-800">Retrieval & Agentic Web Search</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Tune query rewriting, HyDE expansion, and automatic SearXNG fallback.
-                      </p>
-                    </div>
-
-                    <div className="space-y-3">
-                      <label className="flex items-start gap-2.5 text-xs cursor-pointer p-3 rounded-lg border border-slate-200 bg-slate-50/50">
-                        <input
-                          type="checkbox"
-                          checked={queryRewrite}
-                          onChange={(e) => setQueryRewrite(e.target.checked)}
-                          className="mt-0.5 rounded border-slate-300 text-blue-600"
-                        />
-                        <div>
-                          <div className="font-medium text-slate-800">Conversational Query Rewriting</div>
-                          <div className="text-slate-500 mt-0.5">Resolves pronouns using the last 4 chat turns before vector search.</div>
-                        </div>
-                      </label>
-
-                      <label className="flex items-start gap-2.5 text-xs cursor-pointer p-3 rounded-lg border border-slate-200 bg-slate-50/50">
-                        <input
-                          type="checkbox"
-                          checked={hydeEnabled}
-                          onChange={(e) => setHydeEnabled(e.target.checked)}
-                          className="mt-0.5 rounded border-slate-300 text-blue-600"
-                        />
-                        <div>
-                          <div className="font-medium text-slate-800">HyDE (Hypothetical Document Embeddings)</div>
-                          <div className="text-slate-500 mt-0.5">Generates a synthetic passage to bridge vocabulary gaps (uses extra LLM call).</div>
-                        </div>
-                      </label>
-
-                      <label className="flex items-start gap-2.5 text-xs cursor-pointer p-3 rounded-lg border border-slate-200 bg-slate-50/50">
-                        <input
-                          type="checkbox"
-                          checked={webSearchEnabled}
-                          onChange={(e) => setWebSearchEnabled(e.target.checked)}
-                          className="mt-0.5 rounded border-slate-300 text-blue-600"
-                        />
-                        <div>
-                          <div className="font-medium text-slate-800">Autonomous Web Search Fallback</div>
-                          <div className="text-slate-500 mt-0.5">Queries SearXNG when local retrieval confidence falls below threshold.</div>
-                        </div>
-                      </label>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 mb-1">
-                          Web Fallback Threshold ({webThreshold.toFixed(2)})
-                        </label>
-                        <input
-                          type="range"
-                          min={0}
-                          max={1}
-                          step={0.05}
-                          value={webThreshold}
-                          onChange={(e) => setWebThreshold(Number(e.target.value))}
-                          className="w-full"
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="settings-searxng" className="block text-xs font-medium text-slate-700 mb-1">
-                          SearXNG Base URL
-                        </label>
-                        <input
-                          id="settings-searxng"
-                          type="url"
-                          value={searxngUrl}
-                          onChange={(e) => setSearxngUrl(e.target.value)}
-                          className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg"
-                        />
-                      </div>
-                    </div>
-
-                    {connectors.length > 0 && (
-                      <div className="pt-3 border-t space-y-2">
-                        <h4 className="text-xs font-semibold text-slate-700">Workspace Web Connectors</h4>
-                        <div className="space-y-1.5">
-                          {connectors.map((c) => (
-                            <div key={c.id} className="flex items-center justify-between p-2.5 rounded-lg border border-slate-200 text-xs">
-                              <div>
-                                <div className="font-medium text-slate-800">{c.name}</div>
-                                <div className="text-[11px] text-slate-500 font-mono">{c.query}</div>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => handleSyncConnector(c.id)}
-                                disabled={syncingId === c.id}
-                                className="px-2.5 py-1 rounded border border-slate-200 hover:bg-slate-50 text-[11px] font-medium flex items-center gap-1"
-                              >
-                                {syncingId === c.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                                <span>Sync</span>
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="flex justify-end pt-3 border-t">
-                      <button
-                        type="button"
-                        disabled={saving}
-                        onClick={() =>
-                          handleSaveSettings({
-                            query_rewrite_enabled: queryRewrite,
-                            hyde_enabled: hydeEnabled,
-                            web_search_enabled: webSearchEnabled,
-                            web_search_confidence_threshold: webThreshold,
-                            searxng_base_url: searxngUrl,
-                          })
-                        }
-                        className="px-4 py-2 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        Save Retrieval
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* TAB 3: MEMORY & DREAMING */}
-                {activeTab === "memory" && (
-                  <div className="space-y-5">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-800">Cognitive Memory & Sleep Consolidation</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Inspect episodic/entity graph health and run NREM pruning + REM associative dreaming.
-                      </p>
-                    </div>
-
-                    {dreamStatus ? (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                        <div className="p-3 rounded-xl border bg-slate-50/70">
-                          <div className="text-[11px] text-slate-500">Total Memories</div>
-                          <div className="text-lg font-semibold font-mono tabular-nums text-slate-800">{dreamStatus.total_memories}</div>
-                        </div>
-                        <div className="p-3 rounded-xl border bg-slate-50/70">
-                          <div className="text-[11px] text-slate-500">Active Nodes</div>
-                          <div className="text-lg font-semibold font-mono tabular-nums text-emerald-700">{dreamStatus.active_nodes}</div>
-                        </div>
-                        <div className="p-3 rounded-xl border bg-slate-50/70">
-                          <div className="text-[11px] text-slate-500">Pruned Nodes</div>
-                          <div className="text-lg font-semibold font-mono tabular-nums text-slate-600">{dreamStatus.invalidated_nodes}</div>
-                        </div>
-                        <div className="p-3 rounded-xl border bg-slate-50/70">
-                          <div className="text-[11px] text-slate-500">Graph Edges</div>
-                          <div className="text-lg font-semibold font-mono tabular-nums text-blue-700">{dreamStatus.total_edges}</div>
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-slate-500">Select a workspace to view memory metrics.</p>
-                    )}
-
-                    <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/60 flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-xs font-semibold text-slate-800">On-Demand Sleep Cycle (NREM + REM)</div>
-                        <div className="text-xs text-slate-500 mt-0.5">
-                          Deduplicates noisy memories, resolves contradictions, and synthesizes cross-document dream insights.
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleTriggerDream}
-                        disabled={dreaming || !workspaceId}
-                        className="px-3.5 py-2 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-                      >
-                        {dreaming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                        <span>Run Dream Cycle</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* TAB 4: SECURITY & AUDIT */}
-                {activeTab === "security" && (
-                  <div className="space-y-5">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-800">Authentication & Audit Trail</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Configure JWT authentication and review recent system audit events.
-                      </p>
-                    </div>
-
-                    <div className="p-4 rounded-xl border border-slate-200 space-y-3">
-                      <label className="flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={authEnabled}
-                          onChange={(e) => setAuthEnabled(e.target.checked)}
-                          className="rounded border-slate-300 text-blue-600"
-                        />
-                        <span>Require JWT Authentication (`AUTH_ENABLED`)</span>
-                      </label>
-
-                      <div className="flex items-center gap-2 text-xs text-slate-600">
-                        <span>JWT Secret:</span>
-                        <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${hasJwtSecret ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-                          {hasJwtSecret ? "Configured" : "Not set"}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="password"
-                          value={newJwtSecret}
-                          onChange={(e) => setNewJwtSecret(e.target.value)}
-                          placeholder="Set new JWT secret (leave blank to keep)"
-                          className="flex-1 px-3 py-1.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg"
-                        />
-                        <button
-                          type="button"
-                          disabled={saving}
-                          onClick={() => handleSaveSettings({ generate_jwt_secret: true }, "Generated and saved new JWT secret.")}
-                          className="px-3 py-1.5 text-xs rounded-lg border border-slate-200 hover:bg-slate-50"
-                        >
-                          Generate Secret
-                        </button>
+                  {/* TAB: RETRIEVAL */}
+                  {activeTab === "retrieval" && (
+                    <SectionCard
+                      icon={Globe}
+                      title="Retrieval & Agentic Web Search"
+                      description="Tune query rewriting, HyDE expansion, and automatic SearXNG fallback."
+                      footer={
                         <button
                           type="button"
                           disabled={saving}
                           onClick={() =>
                             handleSaveSettings({
-                              auth_enabled: authEnabled,
-                              jwt_secret: newJwtSecret || undefined,
+                              query_rewrite_enabled: queryRewrite,
+                              hyde_enabled: hydeEnabled,
+                              web_search_enabled: webSearchEnabled,
+                              web_search_confidence_threshold: webThreshold,
+                              searxng_base_url: searxngUrl,
                             })
                           }
-                          className="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                          className={primaryBtn}
                         >
-                          Save Auth
+                          <span>Save Retrieval</span>
                         </button>
+                      }
+                    >
+                      <div className="space-y-3">
+                        <ToggleRow
+                          checked={queryRewrite}
+                          onChange={setQueryRewrite}
+                          title="Conversational Query Rewriting"
+                          description="Resolves pronouns using the last 4 chat turns before vector search."
+                        />
+                        <ToggleRow
+                          checked={hydeEnabled}
+                          onChange={setHydeEnabled}
+                          title="HyDE (Hypothetical Document Embeddings)"
+                          description="Generates a synthetic passage to bridge vocabulary gaps (uses an extra LLM call)."
+                        />
+                        <ToggleRow
+                          checked={webSearchEnabled}
+                          onChange={setWebSearchEnabled}
+                          title="Autonomous Web Search Fallback"
+                          description="Queries SearXNG when local retrieval confidence falls below the threshold."
+                        />
                       </div>
-                    </div>
 
-                    <div className="space-y-2">
-                      <h4 className="text-xs font-semibold text-slate-700">Recent Audit Log (Last 15)</h4>
-                      <div className="border rounded-xl overflow-hidden">
-                        <div className="max-h-56 overflow-y-auto divide-y divide-slate-100 text-[11px]">
-                          {auditLogs.length === 0 ? (
-                            <div className="p-4 text-center text-slate-400">No audit events recorded yet.</div>
-                          ) : (
-                            auditLogs.map((log) => (
-                              <div key={log.id} className="p-2.5 flex items-center justify-between gap-3 hover:bg-slate-50">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <Field label={`Web Fallback Threshold (${webThreshold.toFixed(2)})`}>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={webThreshold}
+                            onChange={(e) => setWebThreshold(Number(e.target.value))}
+                            className="w-full accent-blue-600"
+                          />
+                        </Field>
+                        <Field label="SearXNG Base URL" htmlFor="settings-searxng">
+                          <input
+                            id="settings-searxng"
+                            type="url"
+                            value={searxngUrl}
+                            onChange={(e) => setSearxngUrl(e.target.value)}
+                            className={cn(inputClass, "font-mono")}
+                          />
+                        </Field>
+                      </div>
+
+                      {connectors.length > 0 && (
+                        <div className="pt-4 border-t border-slate-100 space-y-2">
+                          <h4 className="text-xs font-semibold text-slate-700">Workspace Web Connectors</h4>
+                          <div className="space-y-1.5">
+                            {connectors.map((c) => (
+                              <div
+                                key={c.id}
+                                className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200 bg-white"
+                              >
                                 <div className="min-w-0">
-                                  <div className="font-medium text-slate-800 truncate">{log.summary}</div>
-                                  <div className="text-slate-400 font-mono">
-                                    {log.event_type} · trace:{log.trace_id.slice(0, 8)}
-                                  </div>
+                                  <div className="text-sm font-medium text-slate-800 truncate">{c.name}</div>
+                                  <div className="text-[11px] text-slate-500 font-mono truncate">{c.query}</div>
                                 </div>
-                                <span className={`px-1.5 py-0.5 rounded font-mono shrink-0 ${log.status === "success" ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
-                                  {log.status}
-                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSyncConnector(c.id)}
+                                  disabled={syncingId === c.id}
+                                  className={ghostBtn}
+                                >
+                                  {syncingId === c.id ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <RefreshCw className="w-3 h-3" />
+                                  )}
+                                  <span>Sync</span>
+                                </button>
                               </div>
-                            ))
-                          )}
+                            ))}
                         </div>
                       </div>
-                    </div>
-                  </div>
-                )}
+                      )}
+                        </SectionCard>
+                      )}
 
-                {/* TAB 5: SYSTEM & STORAGE */}
-                {activeTab === "system" && systemInfo && (
-                  <div className="space-y-5">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-800">System Health, Compute & Storage</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Live runtime diagnostics for compute device, databases, and uploaded files.
-                      </p>
-                    </div>
+                  {/* TAB: MEMORY */}
+                  {activeTab === "memory" && (
+                    <SectionCard
+                      icon={Brain}
+                      title="Cognitive Memory & Sleep Consolidation"
+                      description="Inspect episodic/entity graph health and run NREM pruning + REM associative dreaming."
+                    >
+                      {dreamStatus ? (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <StatCard label="Total Memories" value={dreamStatus.total_memories} tone="text-slate-800" />
+                          <StatCard label="Active Nodes" value={dreamStatus.active_nodes} tone="text-emerald-700" />
+                          <StatCard label="Pruned Nodes" value={dreamStatus.invalidated_nodes} tone="text-slate-600" />
+                          <StatCard label="Graph Edges" value={dreamStatus.total_edges} tone="text-blue-700" />
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500">Select a workspace to view memory metrics.</p>
+                      )}
 
-                    {/* Service Health */}
-                    {health && (
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        {Object.entries(health.services).map(([svc, state]) => {
-                          const ok = state === "ok";
-                          return (
-                            <div key={svc} className="p-3 rounded-xl border bg-slate-50/70">
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-medium text-slate-700 capitalize">{svc}</span>
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-mono ${ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-                                  {ok ? "OK" : "OFFLINE"}
-                                </span>
-                              </div>
-                              {!ok && (
-                                <div className="text-[11px] text-slate-500 mt-1 truncate" title={state}>
-                                  {state}
-                                </div>
-                              )}
+                      <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/60 flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-slate-800">On-Demand Sleep Cycle (NREM + REM)</div>
+                          <div className="text-xs text-slate-500 mt-0.5 leading-snug">
+                            Deduplicates noisy memories, resolves contradictions, and synthesizes cross-document dream
+                            insights.
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleTriggerDream}
+                          disabled={dreaming || !workspaceId}
+                          className={cn(primaryBtn, "shrink-0")}
+                        >
+                          {dreaming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                          <span>Run Dream Cycle</span>
+                        </button>
+                      </div>
+                    </SectionCard>
+                  )}
+
+                  {/* TAB: SECURITY */}
+                  {activeTab === "security" && (
+                    <SectionCard
+                      icon={Shield}
+                      title="Authentication & Audit Trail"
+                      description="Configure JWT authentication and review recent system audit events."
+                    >
+                      <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-3">
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-slate-800">Require JWT Authentication</div>
+                            <div className="text-xs text-slate-500 mt-0.5">
+                              <code className="font-mono">AUTH_ENABLED</code> gate for all protected routes.
                             </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                          </div>
+                          <Switch checked={authEnabled} onChange={setAuthEnabled} label="Require JWT Authentication" />
+                        </div>
 
-                    {/* Compute & Storage */}
-                    <div className="border rounded-xl divide-y text-xs">
-                      <div className="p-3 flex items-center justify-between">
-                        <span className="text-slate-500 flex items-center gap-1.5">
-                          <Activity className="w-3.5 h-3.5" /> Compute Device
-                        </span>
-                        <span className="font-mono text-slate-800">
-                          {systemInfo.compute_device.toUpperCase()}
-                          {systemInfo.gpu_name ? ` (${systemInfo.gpu_name})` : ""}
-                        </span>
+                        <div className="flex items-center gap-2 text-xs text-slate-600">
+                          <span>JWT Secret:</span>
+                          <span
+                            className={cn(
+                              "px-2 py-0.5 rounded font-mono text-[11px]",
+                              hasJwtSecret ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+                            )}
+                          >
+                            {hasJwtSecret ? "Configured" : "Not set"}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="password"
+                            value={newJwtSecret}
+                            onChange={(e) => setNewJwtSecret(e.target.value)}
+                            placeholder="Set new JWT secret (leave blank to keep)"
+                            className={cn(inputClass, "flex-1 min-w-[12rem] font-mono")}
+                          />
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => handleSaveSettings({ generate_jwt_secret: true }, "Generated and saved new JWT secret.")}
+                            className={ghostBtn}
+                          >
+                            Generate Secret
+                          </button>
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() =>
+                              handleSaveSettings({
+                                auth_enabled: authEnabled,
+                                jwt_secret: newJwtSecret || undefined,
+                              })
+                            }
+                            className={primaryBtn}
+                          >
+                            Save Auth
+                          </button>
+                        </div>
                       </div>
-                      <div className="p-3 flex items-center justify-between">
-                        <span className="text-slate-500">Embedding / Reranker</span>
-                        <span className="font-mono text-slate-800">BAAI/bge-m3 · BAAI/bge-reranker-base</span>
+
+                      <div className="space-y-2">
+                        <h4 className="text-xs font-semibold text-slate-700">Recent Audit Log (Last 15)</h4>
+                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+                          <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 text-[11px]">
+                            {auditLogs.length === 0 ? (
+                              <div className="p-6 text-center text-slate-400">No audit events recorded yet.</div>
+                            ) : (
+                              auditLogs.map((log) => (
+                                <div
+                                  key={log.id}
+                                  className="p-3 flex items-center justify-between gap-3 hover:bg-slate-50 transition-colors"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="font-medium text-slate-800 truncate">{log.summary}</div>
+                                    <div className="text-slate-400 font-mono truncate">
+                                      {log.event_type} · trace:{log.trace_id.slice(0, 8)}
+                                    </div>
+                                  </div>
+                                  <span
+                                    className={cn(
+                                      "px-1.5 py-0.5 rounded font-mono shrink-0",
+                                      log.status === "success"
+                                        ? "bg-emerald-50 text-emerald-700"
+                                        : "bg-rose-50 text-rose-700"
+                                    )}
+                                  >
+                                    {log.status}
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <div className="p-3 flex items-center justify-between">
-                        <span className="text-slate-500">Database</span>
-                        <span className="font-mono text-slate-800 uppercase">{systemInfo.database_type}</span>
+                    </SectionCard>
+                  )}
+
+                  {/* TAB: SYSTEM */}
+                  {activeTab === "system" && (
+                    <>
+                      {systemInfo && (
+                        <SectionCard
+                          icon={HardDrive}
+                          title="System Health, Compute & Storage"
+                          description="Live runtime diagnostics for compute device, databases, and uploaded files."
+                        >
+                      {health && (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          {Object.entries(health.services).map(([svc, state]) => {
+                            const ok = state === "ok";
+                            return (
+                              <div key={svc} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/60">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-medium text-slate-700 capitalize">{svc}</span>
+                                  <span
+                                    className={cn(
+                                      "px-2 py-0.5 rounded text-[10px] font-mono",
+                                      ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+                                    )}
+                                  >
+                                    {ok ? "OK" : "OFFLINE"}
+                                  </span>
+                                </div>
+                                {!ok && (
+                                  <div className="text-[11px] text-slate-500 mt-1 truncate" title={state}>
+                                    {state}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 text-xs bg-white">
+                        <div className="p-3 flex items-center justify-between">
+                          <span className="text-slate-500 flex items-center gap-1.5">
+                            <Activity className="w-3.5 h-3.5" aria-hidden="true" /> Compute Device
+                          </span>
+                          <span className="font-mono text-slate-800">
+                            {systemInfo.compute_device.toUpperCase()}
+                            {systemInfo.gpu_name ? ` (${systemInfo.gpu_name})` : ""}
+                          </span>
+                        </div>
+                        <div className="p-3 flex items-center justify-between gap-4">
+                          <span className="text-slate-500 shrink-0">Embedding / Reranker</span>
+                          <span className="font-mono text-slate-800 truncate text-right">
+                            {systemInfo.embedding_model} · {systemInfo.reranker_model}
+                          </span>
+                        </div>
+                        <div className="p-3 flex items-center justify-between">
+                          <span className="text-slate-500">Database</span>
+                          <span className="font-mono text-slate-800 uppercase">{systemInfo.database_type}</span>
+                        </div>
+                        <div className="p-3 flex items-center justify-between gap-4">
+                          <span className="text-slate-500 shrink-0">Qdrant ({systemInfo.qdrant_mode})</span>
+                          <span className="font-mono text-slate-800 truncate">{systemInfo.qdrant_location}</span>
+                        </div>
+                        <div className="p-3 flex items-center justify-between gap-4">
+                          <span className="text-slate-500 shrink-0">
+                            Uploads ({systemInfo.upload_file_count} files · {formatBytes(systemInfo.upload_total_bytes)})
+                          </span>
+                          <span className="font-mono text-slate-800 truncate">{systemInfo.upload_dir}</span>
+                        </div>
                       </div>
-                      <div className="p-3 flex items-center justify-between gap-4">
-                        <span className="text-slate-500 shrink-0">Qdrant ({systemInfo.qdrant_mode})</span>
-                        <span className="font-mono text-slate-800 truncate">{systemInfo.qdrant_location}</span>
-                      </div>
-                      <div className="p-3 flex items-center justify-between gap-4">
-                        <span className="text-slate-500 shrink-0">Uploads ({systemInfo.upload_file_count} files · {formatBytes(systemInfo.upload_total_bytes)})</span>
-                        <span className="font-mono text-slate-800 truncate">{systemInfo.upload_dir}</span>
-                      </div>
+                    </SectionCard>
+                  )}
+                  <SectionCard
+                    icon={AlertTriangle}
+                    title="Danger zone"
+                    description="Permanently wipe all workspaces, documents, chats, memory, vectors, and uploaded files."
+                    footer={
+                      confirmReset ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmReset(false)}
+                            disabled={resetting}
+                            className={ghostBtn}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleResetEverything}
+                            disabled={resetting}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
+                          >
+                            {resetting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                            <span>Yes, wipe everything</span>
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmReset(true)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium rounded-lg border border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Reset everything</span>
+                        </button>
+                      )
+                    }
+                  >
+                    <div className="p-3 rounded-xl border border-rose-200 bg-rose-50/50 text-[11px] text-rose-700 leading-snug">
+                      This cannot be undone. The app will reload and you’ll need to re-add LLM endpoints and re-upload
+                      documents.
                     </div>
-                  </div>
-                )}
-              </>
-            )}
+                  </SectionCard>
+                </>
+              )}
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Toast feedback */}
+      {feedback && (
+        <div
+          role={feedback.type === "error" ? "alert" : "status"}
+          aria-live={feedback.type === "error" ? "assertive" : "polite"}
+          className={cn(
+            "fixed bottom-6 right-6 z-[60] max-w-sm flex items-start gap-2.5 rounded-xl border px-4 py-3 text-xs shadow-lg animate-in slide-in-from-bottom-2",
+            feedback.type === "success"
+              ? "bg-white text-emerald-800 border-emerald-200"
+              : "bg-white text-rose-800 border-rose-200"
+          )}
+        >
+          {feedback.type === "success" ? (
+            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" aria-hidden="true" />
+          ) : (
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" aria-hidden="true" />
+          )}
+          <span className="break-words leading-snug">{feedback.message}</span>
+          <button
+            onClick={() => setFeedback(null)}
+            aria-label="Dismiss notification"
+            className="ml-1 text-slate-400 hover:text-slate-600"
+          >
+            <X className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,14 +1,16 @@
 import hashlib
 import logging
 import math
+import os
 import re
 from typing import Any, Dict, List
 from sentence_transformers import SentenceTransformer
 
-from ..core.config import detect_torch_device
+from ..core.config import apply_hf_offline_mode, detect_torch_device, embedding_settings
 
 logger = logging.getLogger(__name__)
 _model = None
+_model_name = None
 
 # Standard lightweight English stopwords to prevent high-frequency words dominating sparse search
 STOPWORDS = {
@@ -25,17 +27,46 @@ STOPWORDS = {
 }
 
 def get_model():
-    global _model
+    global _model, _model_name
+    model_name = embedding_settings()["model"]
+    if _model is not None and _model_name != model_name:
+        # Model changed at runtime — drop the cached instance so it reloads.
+        _model = None
+        _model_name = None
     if _model is None:
         device = detect_torch_device()
-        logger.info("Loading embedding model BAAI/bge-m3 on device=%s", device)
-        _model = SentenceTransformer("BAAI/bge-m3", device=device)
+        logger.info("Loading embedding model %s on device=%s", model_name, device)
+        offline = apply_hf_offline_mode()
+        try:
+            _model = SentenceTransformer(model_name, device=device)
+        except Exception:
+            if offline:
+                logger.warning("Local cache miss for %s; downloading from Hugging Face", model_name)
+                os.environ.pop("HF_HUB_OFFLINE", None)
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                _model = SentenceTransformer(model_name, device=device)
+            else:
+                raise
+        _model_name = model_name
         if device == "cuda":
             try:
                 _model.half()
             except Exception:
                 pass
     return _model
+
+
+def embedding_dim() -> int:
+    """Return the dense vector dimension of the configured embedding model."""
+    m = get_model()
+    dim = None
+    if hasattr(m, "get_embedding_dimension"):
+        dim = m.get_embedding_dimension()
+    elif hasattr(m, "get_sentence_embedding_dimension"):
+        dim = m.get_sentence_embedding_dimension()
+    if not dim:
+        raise RuntimeError("Could not determine embedding dimension")
+    return int(dim)
 
 
 def embed(texts: List[str], batch_size: int = 32) -> List[List[float]]:
@@ -128,13 +159,15 @@ def embed_late_chunks(
         if tokenizer is None or transformer_module is None:
             return embed(chunks)
 
-        # Tokenize entire document with offset mapping
+        # Tokenize entire document with offset mapping (cap to the model's max length).
+        model_max = getattr(tokenizer, "model_max_length", 8192) or 8192
+        max_len = min(8192, int(model_max))
         inputs = tokenizer(
             full_text,
             return_tensors="pt",
             return_offsets_mapping=True,
             truncation=True,
-            max_length=8192,
+            max_length=max_len,
         )
         offsets = inputs["offset_mapping"][0].tolist()
         model_inputs = {k: v.to(device) for k, v in inputs.items() if k != "offset_mapping"}

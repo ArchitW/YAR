@@ -95,3 +95,16 @@ export interface DreamStatusData {
   total_edges: number;
 }
 
+export interface LLMEndpoint {
+  id: number;
+  name: string;
+  base_url: string;
+  model: string;
+  timeout: string;
+  enabled: boolean;
+  is_active: boolean;
+  has_api_key: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+

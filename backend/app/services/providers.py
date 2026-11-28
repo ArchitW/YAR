@@ -212,21 +212,51 @@ class OllamaProvider(OpenAICompatibleProvider):
             return False
 
 
+def _active_endpoint():
+    """Return the active, enabled LLMProvider row from the DB, or None.
+
+    Defensive: any DB/table error falls back to env-based config so chat never
+    breaks if the table is missing (e.g. partial test setups).
+    """
+    try:
+        from ..core.database import SessionLocal
+        from ..models.llm_provider import LLMProvider
+
+        db = SessionLocal()
+        try:
+            return (
+                db.query(LLMProvider)
+                .filter(LLMProvider.is_active.is_(True), LLMProvider.enabled.is_(True))
+                .order_by(LLMProvider.id.asc())
+                .first()
+            )
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+
+def _provider_from_config(base_url: str, model: str, api_key: str, timeout: str) -> LLMProvider:
+    if "11434" in base_url or "ollama" in model.lower():
+        return OllamaProvider(base_url=base_url, model=model, timeout=float(timeout))
+    return OpenAICompatibleProvider(
+        base_url=base_url,
+        model=model,
+        api_key=api_key or None,
+        timeout=float(timeout),
+    )
+
+
 def get_provider() -> LLMProvider | None:
-    """Return the configured provider, or autodiscover local Ollama, or None."""
+    """Return the active provider: DB endpoint first, then env config, then Ollama autodiscovery."""
+    ep = _active_endpoint()
+    if ep is not None and ep.base_url and ep.model:
+        return _provider_from_config(ep.base_url, ep.model, ep.api_key or "", ep.timeout or "60")
+
     settings = llm_settings()
     if settings["base_url"] and settings["model"]:
-        if "11434" in settings["base_url"] or "ollama" in settings.get("model", "").lower():
-            return OllamaProvider(
-                base_url=settings["base_url"],
-                model=settings["model"],
-                timeout=float(settings["timeout"]),
-            )
-        return OpenAICompatibleProvider(
-            base_url=settings["base_url"],
-            model=settings["model"],
-            api_key=settings["api_key"] or None,
-            timeout=float(settings["timeout"]),
+        return _provider_from_config(
+            settings["base_url"], settings["model"], settings["api_key"], settings["timeout"]
         )
 
     # Autodiscovery fallback: check if local Ollama is running and has pulled models

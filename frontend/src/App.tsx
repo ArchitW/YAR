@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   AlertCircle,
   BookOpen,
@@ -152,15 +152,21 @@ export default function App() {
   // Cognitive Memory & Dossier Drawer state
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
 
-  // Unified Full Settings Modal state
+  // Unified Full Settings — now driven by the /settings route
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const [modelsStatus, setModelsStatus] = useState<ModelsStatus | null>(null);
+  const isSettingsPath = () => window.location.pathname.replace(/\/+$/, "") === "/settings";
+  const [settingsOpen, setSettingsOpen] = useState(isSettingsPath);
+  const settingsPushedRef = useRef(false);
 
   // Backend Terminal Logs Drawer state
   const [isLogsOpen, setIsLogsOpen] = useState(false);
 
   // Overflow ("More") menu state
   const [isMoreOpen, setIsMoreOpen] = useState(false);
+
+  // Active-model selector (header dropdown) state
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
 
   // Left sidebar (mobile) state
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -181,6 +187,59 @@ export default function App() {
       // Backend starting or offline
     }
   }, []);
+
+  // /settings route: open navigates to /settings, close returns to the app.
+  const openSettings = useCallback(
+    (tab: SettingsTab = "models") => {
+      setSettingsTab(tab);
+      fetchModelsStatus();
+      setIsSidebarOpen(false);
+      if (!isSettingsPath()) {
+        window.history.pushState(null, "", "/settings");
+        settingsPushedRef.current = true;
+      }
+      setSettingsOpen(true);
+    },
+    [fetchModelsStatus]
+  );
+
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    setSettingsTab(null);
+    if (isSettingsPath()) {
+      if (settingsPushedRef.current) {
+        settingsPushedRef.current = false;
+        window.history.back();
+      } else {
+        // Deep-linked /settings: return to the app while keeping ?workspace=&chat=.
+        window.history.replaceState(null, "", `/${window.location.search}`);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const open = isSettingsPath();
+      setSettingsOpen(open);
+      if (!open) {
+        setSettingsTab(null);
+        settingsPushedRef.current = false;
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  // Switch the active LLM endpoint from the header dropdown.
+  const activateProvider = useCallback(async (id: number) => {
+    setIsModelMenuOpen(false);
+    try {
+      await fetch(`${API_BASE}/settings/llm-endpoints/${id}/activate`, { method: "POST" });
+    } catch {
+      // ignore
+    }
+    fetchModelsStatus();
+  }, [fetchModelsStatus]);
 
   useEffect(() => {
     if (!activeWorkspace) return;
@@ -744,11 +803,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => {
-              setSettingsTab("models");
-              fetchModelsStatus();
-              setIsSidebarOpen(false);
-            }}
+            onClick={() => openSettings("models")}
             className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm text-slate-600 hover:bg-slate-100"
           >
             <Settings className="w-4 h-4" />
@@ -875,25 +930,84 @@ export default function App() {
               <span className="hidden md:inline">Memory</span>
             </button>
 
-            <button
-              onClick={() => {
-                setSettingsTab("models");
-                fetchModelsStatus();
-              }}
-              className="px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-              aria-label="Configure LLM endpoint and open settings"
-              title="LLM endpoint & settings"
-            >
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  modelsStatus?.configured_provider ? "bg-emerald-500" : "bg-amber-500"
-                }`}
-              />
-              <span className="max-w-[120px] truncate hidden sm:inline">
-                {modelsStatus?.configured_model || "Add LLM Endpoint"}
-              </span>
-              <Settings className="w-3.5 h-3.5 opacity-60" />
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setIsModelMenuOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={isModelMenuOpen}
+                className="px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                aria-label="Select active LLM model"
+                title="Active model"
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    modelsStatus?.configured_provider ? "bg-emerald-500" : "bg-amber-500"
+                  }`}
+                />
+                <span className="max-w-[140px] truncate hidden sm:inline">
+                  {modelsStatus?.configured_model || "Add LLM Endpoint"}
+                </span>
+                <Settings className="w-3.5 h-3.5 opacity-60" />
+              </button>
+
+              {isModelMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full mt-1 w-64 bg-white border border-slate-200 rounded-xl shadow-lg z-30 p-1 text-xs text-slate-700"
+                >
+                  <div className="px-2 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Active model
+                  </div>
+                  {(modelsStatus?.providers?.length ?? 0) === 0 && (
+                    <div className="px-2 py-2 text-[11px] text-slate-400">
+                      No endpoints configured yet.
+                    </div>
+                  )}
+                  {modelsStatus?.providers
+                    ?.filter((p) => p.enabled)
+                    .map((p) => {
+                      const active = p.id === modelsStatus.active_provider_id;
+                      return (
+                        <button
+                          key={p.id}
+                          role="menuitem"
+                          onClick={() => activateProvider(p.id)}
+                          className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left ${
+                            active ? "bg-blue-50 text-blue-700 font-medium" : "hover:bg-slate-50"
+                          }`}
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              active ? "bg-blue-600" : "bg-slate-300"
+                            }`}
+                          />
+                          <span className="truncate flex-1">{p.name}</span>
+                          <span className="text-[10px] font-mono text-slate-400 truncate max-w-[90px]">
+                            {p.model}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  {(modelsStatus?.providers?.some((p) => !p.enabled) ?? false) && (
+                    <div className="px-2 pt-1.5 pb-0.5 text-[10px] text-slate-400">
+                      {modelsStatus?.providers?.filter((p) => !p.enabled).length} disabled
+                    </div>
+                  )}
+                  <div className="my-1 border-t border-slate-100" />
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setIsModelMenuOpen(false);
+                      openSettings("models");
+                    }}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50"
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                    <span>Manage endpoints</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -940,7 +1054,11 @@ export default function App() {
                     {!isUser && ((m.steps && m.steps.length > 0) || m.thinking) && (
                       <Steps
                         defaultOpen={!m.text}
-                        className="mb-3 rounded-xl bg-slate-50/80 border border-slate-200/80 px-3 py-2"
+                        className={
+                          m.text
+                            ? "mb-1.5 rounded-lg px-0 py-0.5"
+                            : "mb-3 rounded-xl bg-slate-50/80 border border-slate-200/80 px-3 py-2"
+                        }
                       >
                         <StepsTrigger
                           leftIcon={
@@ -1299,16 +1417,17 @@ export default function App() {
               isLoading={isLoadingDocs}
               onRefresh={() => loadDocuments(activeWorkspace.id)}
               workspaceName={activeWorkspace.name}
+              apiBase={API_BASE}
             />
           </div>
         </aside>
       )}
 
-      {/* Unified Full Settings Modal */}
+      {/* Unified Full Settings — rendered at the /settings route */}
       <SettingsModal
-        isOpen={settingsTab !== null}
+        isOpen={settingsOpen}
         initialTab={settingsTab || "models"}
-        onClose={() => setSettingsTab(null)}
+        onClose={closeSettings}
         apiBase={API_BASE}
         workspaceId={activeWorkspace?.id ?? null}
         modelsStatus={modelsStatus}
