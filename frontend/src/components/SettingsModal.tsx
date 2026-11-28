@@ -36,6 +36,14 @@ interface FullSettings {
   ollama_timeout: number;
   embedding_model: string;
   reranker_model: string;
+  rerank_enabled: boolean;
+  rerank_top_k: number;
+  hf_offline: boolean;
+  async_ingest: boolean;
+  router_enabled: boolean;
+  router_base_url: string;
+  router_model: string;
+  router_timeout: number;
   query_rewrite_enabled: boolean;
   hyde_enabled: boolean;
   web_search_enabled: boolean;
@@ -259,6 +267,16 @@ export default function SettingsModal({
   const [ollamaTimeout, setOllamaTimeout] = useState(3);
   const [embModel, setEmbModel] = useState("BAAI/bge-small-en-v1.5");
   const [rrModel, setRrModel] = useState("cross-encoder/ettin-reranker-17m-v1");
+  const [rerankEnabled, setRerankEnabled] = useState(false);
+  const [rerankTopK, setRerankTopK] = useState(10);
+  const [hfOffline, setHfOffline] = useState(true);
+  const [asyncIngest, setAsyncIngest] = useState(false);
+  const [routerEnabled, setRouterEnabled] = useState(false);
+  const [routerBaseUrl, setRouterBaseUrl] = useState("http://127.0.0.1:8008");
+  const [routerModel, setRouterModel] = useState("kev-latest");
+  const [routerTimeout, setRouterTimeout] = useState(5);
+  const [reindexing, setReindexing] = useState(false);
+  const [reindexProgress, setReindexProgress] = useState<{ done: number; total: number } | null>(null);
 
   const [queryRewrite, setQueryRewrite] = useState(true);
   const [hydeEnabled, setHydeEnabled] = useState(false);
@@ -340,6 +358,14 @@ export default function SettingsModal({
         setOllamaTimeout(s.ollama_timeout);
         setEmbModel(s.embedding_model || "BAAI/bge-small-en-v1.5");
         setRrModel(s.reranker_model || "cross-encoder/ettin-reranker-17m-v1");
+        setRerankEnabled(s.rerank_enabled);
+        setRerankTopK(s.rerank_top_k);
+        setHfOffline(s.hf_offline);
+        setAsyncIngest(s.async_ingest);
+        setRouterEnabled(s.router_enabled);
+        setRouterBaseUrl(s.router_base_url || "http://127.0.0.1:8008");
+        setRouterModel(s.router_model || "kev-latest");
+        setRouterTimeout(s.router_timeout);
         setQueryRewrite(s.query_rewrite_enabled);
         setHydeEnabled(s.hyde_enabled);
         setWebSearchEnabled(s.web_search_enabled);
@@ -430,6 +456,34 @@ export default function SettingsModal({
       setFeedback({ type: "error", message: "Failed to run memory dream cycle." });
     } finally {
       setDreaming(false);
+    }
+  };
+
+  const handleReindexAll = async () => {
+    setReindexing(true);
+    setReindexProgress(null);
+    setFeedback(null);
+    try {
+      const res = await fetch(`${apiBase}/settings/reindex-all`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      for (let i = 0; i < 600; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const s = await fetch(`${apiBase}/settings/reindex-status`);
+        if (s.ok) {
+          const st = await s.json();
+          setReindexProgress({ done: st.done, total: st.total });
+          if (!st.running) {
+            setReindexing(false);
+            setFeedback({ type: "success", message: `Reindexed ${st.done} document(s).` });
+            return;
+          }
+        }
+      }
+      setReindexing(false);
+      setFeedback({ type: "success", message: "Reindex still running in the background." });
+    } catch {
+      setReindexing(false);
+      setFeedback({ type: "error", message: "Failed to start reindex." });
     }
   };
 
@@ -599,6 +653,58 @@ export default function SettingsModal({
                       </SectionCard>
 
                       <SectionCard
+                        icon={RefreshCw}
+                        title="Reindex Documents"
+                        description="Rebuild the vector index for every document. Required after changing the embedding model."
+                        footer={
+                          <button
+                            type="button"
+                            onClick={handleReindexAll}
+                            disabled={reindexing}
+                            className={primaryBtn}
+                          >
+                            {reindexing ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-3.5 h-3.5" />
+                            )}
+                            <span>{reindexing ? "Reindexing…" : "Reindex all"}</span>
+                          </button>
+                        }
+                      >
+                        {reindexProgress && (
+                          <div>
+                            <div className="flex justify-between text-[11px] text-slate-500 mb-1">
+                              <span>
+                                {reindexProgress.done} / {reindexProgress.total} documents
+                              </span>
+                              <span className="font-mono">
+                                {reindexProgress.total
+                                  ? Math.round((reindexProgress.done / reindexProgress.total) * 100)
+                                  : 0}
+                                %
+                              </span>
+                            </div>
+                            <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-blue-600 transition-all"
+                                style={{
+                                  width: `${
+                                    reindexProgress.total
+                                      ? (reindexProgress.done / reindexProgress.total) * 100
+                                      : 0
+                                  }%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        <p className="text-[11px] text-slate-500 leading-snug">
+                          Changing the embedding model downloads it (if not cached) on save, then reindex here.
+                        </p>
+                      </SectionCard>
+
+                      <SectionCard
                         icon={Cpu}
                         title="Local Ollama Autodiscovery"
                         description="Probe a local Ollama daemon for installed models when no endpoint is active."
@@ -717,6 +823,8 @@ export default function SettingsModal({
                               web_search_enabled: webSearchEnabled,
                               web_search_confidence_threshold: webThreshold,
                               searxng_base_url: searxngUrl,
+                              rerank_enabled: rerankEnabled,
+                              rerank_top_k: rerankTopK,
                             })
                           }
                           className={primaryBtn}
@@ -744,6 +852,12 @@ export default function SettingsModal({
                           title="Autonomous Web Search Fallback"
                           description="Queries SearXNG when local retrieval confidence falls below the threshold."
                         />
+                        <ToggleRow
+                          checked={rerankEnabled}
+                          onChange={setRerankEnabled}
+                          title="Cross-Encoder Reranking"
+                          description="Re-rank retrieved candidates with the reranker model for higher precision (adds latency)."
+                        />
                       </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -765,6 +879,17 @@ export default function SettingsModal({
                             value={searxngUrl}
                             onChange={(e) => setSearxngUrl(e.target.value)}
                             className={cn(inputClass, "font-mono")}
+                          />
+                        </Field>
+                        <Field label="Rerank Top-K (candidates)" htmlFor="settings-rerank-topk">
+                          <input
+                            id="settings-rerank-topk"
+                            type="number"
+                            min={1}
+                            max={100}
+                            value={rerankTopK}
+                            onChange={(e) => setRerankTopK(Number(e.target.value))}
+                            className={cn(inputClass, "font-mono tabular-nums")}
                           />
                         </Field>
                       </div>
@@ -1011,9 +1136,92 @@ export default function SettingsModal({
                       </div>
                     </SectionCard>
                   )}
-                  <SectionCard
-                    icon={AlertTriangle}
-                    title="Danger zone"
+                      <SectionCard
+                        icon={Settings}
+                        title="Advanced"
+                        description="Low-level runtime toggles. Changes apply immediately (HF offline applies on next model load)."
+                        footer={
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() =>
+                              handleSaveSettings(
+                                {
+                                  hf_offline: hfOffline,
+                                  async_ingest: asyncIngest,
+                                  router_enabled: routerEnabled,
+                                  router_base_url: routerBaseUrl,
+                                  router_model: routerModel,
+                                  router_timeout: routerTimeout,
+                                },
+                                "Advanced settings saved."
+                              )
+                            }
+                            className={primaryBtn}
+                          >
+                            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                            <span>Save Advanced</span>
+                          </button>
+                        }
+                      >
+                        <div className="space-y-3">
+                          <ToggleRow
+                            checked={hfOffline}
+                            onChange={setHfOffline}
+                            title="Hugging Face offline mode"
+                            description="Load embedding/reranker models from the local cache without contacting the hub."
+                          />
+                          <ToggleRow
+                            checked={asyncIngest}
+                            onChange={setAsyncIngest}
+                            title="Asynchronous document ingestion"
+                            description="Index uploads in the background instead of blocking the request."
+                          />
+                        </div>
+                        <div className="pt-4 border-t border-slate-100 space-y-3">
+                          <ToggleRow
+                            checked={routerEnabled}
+                            onChange={setRouterEnabled}
+                            title="Decision router"
+                            description="Classify queries with a small local router model before retrieval."
+                          />
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <Field label="Router Base URL" htmlFor="router-url">
+                              <input
+                                id="router-url"
+                                type="url"
+                                value={routerBaseUrl}
+                                onChange={(e) => setRouterBaseUrl(e.target.value)}
+                                className={cn(inputClass, "font-mono")}
+                              />
+                            </Field>
+                            <Field label="Router Model" htmlFor="router-model">
+                              <input
+                                id="router-model"
+                                type="text"
+                                value={routerModel}
+                                onChange={(e) => setRouterModel(e.target.value)}
+                                className={cn(inputClass, "font-mono")}
+                              />
+                            </Field>
+                            <Field label="Router Timeout (s)" htmlFor="router-timeout">
+                              <input
+                                id="router-timeout"
+                                type="number"
+                                step="0.5"
+                                min={0.5}
+                                max={60}
+                                value={routerTimeout}
+                                onChange={(e) => setRouterTimeout(Number(e.target.value))}
+                                className={cn(inputClass, "font-mono tabular-nums")}
+                              />
+                            </Field>
+                          </div>
+                        </div>
+                      </SectionCard>
+                      <SectionCard
+                        icon={AlertTriangle}
+                        title="Danger zone"
                     description="Permanently wipe all workspaces, documents, chats, memory, vectors, and uploaded files."
                     footer={
                       confirmReset ? (

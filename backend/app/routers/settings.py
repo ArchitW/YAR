@@ -8,7 +8,7 @@ import secrets
 import shutil
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -23,10 +23,13 @@ from ..core.config import (
     auth_enabled,
     detect_torch_device,
     embedding_settings,
+    hf_offline_settings,
+    async_ingest_settings,
     llm_settings,
     ollama_settings,
     query_rewriter_settings,
     reranker_settings,
+    router_settings,
     searxng_settings,
     update_env_settings,
 )
@@ -34,6 +37,8 @@ from ..core.config import (
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 logger = logging.getLogger(__name__)
+
+_reindex_job: dict[str, Any] = {"running": False, "done": 0, "total": 0}
 
 
 class SettingsResponse(BaseModel):
@@ -47,8 +52,16 @@ class SettingsResponse(BaseModel):
     ollama_timeout: float
     embedding_model: str
     reranker_model: str
-    # Retrieval & Web Search
+    rerank_enabled: bool
+    rerank_top_k: int
     query_rewrite_enabled: bool
+    hf_offline: bool
+    async_ingest: bool
+    router_enabled: bool
+    router_base_url: str
+    router_model: str
+    router_timeout: float
+    # Retrieval & Web Search
     hyde_enabled: bool
     web_search_enabled: bool
     web_search_confidence_threshold: float
@@ -77,6 +90,14 @@ class SettingsPatchRequest(BaseModel):
     ollama_timeout: float | None = None
     embedding_model: str | None = None
     reranker_model: str | None = None
+    rerank_enabled: bool | None = None
+    rerank_top_k: int | None = None
+    hf_offline: bool | None = None
+    async_ingest: bool | None = None
+    router_enabled: bool | None = None
+    router_base_url: str | None = None
+    router_model: str | None = None
+    router_timeout: float | None = None
     query_rewrite_enabled: bool | None = None
     hyde_enabled: bool | None = None
     web_search_enabled: bool | None = None
@@ -120,6 +141,7 @@ def _build_settings_response() -> SettingsResponse:
     sx = searxng_settings()
     emb = embedding_settings()
     rr = reranker_settings()
+    router = router_settings()
     file_count, total_bytes = _upload_stats()
     db_type = "sqlite" if DATABASE_URL.startswith("sqlite") else "postgresql"
     qdrant_mode = "local" if QDRANT_PATH else "server"
@@ -135,7 +157,15 @@ def _build_settings_response() -> SettingsResponse:
         ollama_timeout=float(ollama["timeout"]),
         embedding_model=emb["model"],
         reranker_model=rr["model"],
+        rerank_enabled=bool(rr["enabled"]),
+        rerank_top_k=int(rr["top_k"]),
         query_rewrite_enabled=bool(qr["rewrite_enabled"]),
+        hf_offline=bool(hf_offline_settings()["enabled"]),
+        async_ingest=bool(async_ingest_settings()["enabled"]),
+        router_enabled=bool(router["enabled"]),
+        router_base_url=router["base_url"],
+        router_model=router["model"],
+        router_timeout=float(router["timeout"]),
         hyde_enabled=bool(qr["hyde_enabled"]),
         web_search_enabled=bool(sx["enabled"]),
         web_search_confidence_threshold=float(sx["confidence_threshold"]),
@@ -200,6 +230,22 @@ def update_settings(req: SettingsPatchRequest) -> SettingsResponse:
         new_rr = req.reranker_model.strip()
         if new_rr and new_rr != reranker_settings()["model"]:
             updates["RERANKER_MODEL"] = new_rr
+    if req.rerank_enabled is not None:
+        updates["RERANK_ENABLED"] = "true" if req.rerank_enabled else "false"
+    if req.rerank_top_k is not None:
+        updates["RERANK_TOP_K"] = str(max(1, int(req.rerank_top_k)))
+    if req.hf_offline is not None:
+        updates["HF_OFFLINE"] = "true" if req.hf_offline else "false"
+    if req.async_ingest is not None:
+        updates["ASYNC_INGEST_ENABLED"] = "true" if req.async_ingest else "false"
+    if req.router_enabled is not None:
+        updates["DECISION_ROUTER_ENABLED"] = "true" if req.router_enabled else "false"
+    if req.router_base_url is not None:
+        updates["DECISION_ROUTER_BASE_URL"] = _validate_http_url(req.router_base_url, "Decision Router Base URL")
+    if req.router_model is not None and req.router_model.strip():
+        updates["DECISION_ROUTER_MODEL"] = req.router_model.strip()
+    if req.router_timeout is not None:
+        updates["DECISION_ROUTER_TIMEOUT"] = str(max(0.5, min(req.router_timeout, 60.0)))
 
     if req.query_rewrite_enabled is not None:
         updates["QUERY_REWRITE_ENABLED"] = "true" if req.query_rewrite_enabled else "false"
@@ -229,6 +275,10 @@ def update_settings(req: SettingsPatchRequest) -> SettingsResponse:
 
     if updates:
         update_env_settings(updates)
+
+    if req.hf_offline is False:
+        os.environ.pop("HF_HUB_OFFLINE", None)
+        os.environ.pop("TRANSFORMERS_OFFLINE", None)
 
     if embedding_changed:
         _rebuild_for_embedding_change()
@@ -445,3 +495,40 @@ def reset_everything() -> dict[str, Any]:
                 pass
 
     return {"reset": True}
+
+
+def _reindex_all_background() -> None:
+    from ..core.database import SessionLocal
+    from ..models.document import Document
+    from ..routers.documents import reindex_document
+
+    db = SessionLocal()
+    try:
+        docs = db.query(Document).all()
+        _reindex_job.update(running=True, done=0, total=len(docs))
+        for doc in docs:
+            try:
+                reindex_document(db, doc)
+            except Exception:
+                logger.warning("Reindex failed for document %s", doc.id, exc_info=True)
+            _reindex_job["done"] += 1
+    except Exception:
+        logger.exception("Reindex-all failed")
+    finally:
+        _reindex_job["running"] = False
+        db.close()
+
+
+@router.post("/reindex-all")
+def reindex_all(background_tasks: BackgroundTasks) -> dict[str, Any]:
+    """Reindex every document in the background (e.g. after an embedding change)."""
+    if _reindex_job["running"]:
+        return {"status": "running", "done": _reindex_job["done"], "total": _reindex_job["total"]}
+    background_tasks.add_task(_reindex_all_background)
+    return {"status": "queued"}
+
+
+@router.get("/reindex-status")
+def reindex_status() -> dict[str, Any]:
+    """Progress of the background reindex-all job."""
+    return dict(_reindex_job)

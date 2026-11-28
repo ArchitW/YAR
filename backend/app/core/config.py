@@ -95,6 +95,16 @@ def embedding_settings() -> dict[str, Any]:
     }
 
 
+def hf_offline_settings() -> dict[str, Any]:
+    """Whether Hugging Face hub access is disabled (load from local cache)."""
+    return {"enabled": os.getenv("HF_OFFLINE", "true").strip().lower() in ("1", "true", "yes", "on")}
+
+
+def async_ingest_settings() -> dict[str, Any]:
+    """Whether document uploads are indexed asynchronously (background)."""
+    return {"enabled": os.getenv("ASYNC_INGEST_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")}
+
+
 def detect_torch_device() -> str:
     """Return the best available PyTorch compute device ('cuda', 'mps', or 'cpu')."""
     try:
