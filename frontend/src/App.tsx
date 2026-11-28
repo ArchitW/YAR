@@ -55,6 +55,13 @@ import {
 } from "@/components/ui/prompt-input";
 import { Loader } from "@/components/ui/loader";
 import { Button } from "@/components/ui/button";
+import {
+  ChainOfThought,
+  ChainOfThoughtContent,
+  ChainOfThoughtItem,
+  ChainOfThoughtStep,
+  ChainOfThoughtTrigger,
+} from "@/components/ui/chain-of-thought";
 
 const API_BASE = "http://localhost:8000";
 
@@ -452,6 +459,7 @@ export default function App() {
           role: "assistant",
           text: "",
           citations: [],
+          steps: [],
           provider: "",
           model: "",
           degraded: false,
@@ -493,7 +501,31 @@ export default function App() {
           try {
             const event = JSON.parse(trimmed.slice(6));
             if (event.type === "status") {
-              setStatusText(event.detail || "");
+              const detail = event.detail || "";
+              setStatusText(detail);
+              if (detail) {
+                setMessages((prev) => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last && last.role === "assistant") {
+                    const prevSteps = (last.steps || []).map((s) =>
+                      s.status === "running" ? { ...s, status: "done" as const } : s
+                    );
+                    next[next.length - 1] = {
+                      ...last,
+                      steps: [
+                        ...prevSteps,
+                        {
+                          stage: event.stage || "step",
+                          detail,
+                          status: "running" as const,
+                        },
+                      ],
+                    };
+                  }
+                  return next;
+                });
+              }
             } else if (event.type === "init") {
               setMessages((prev) => {
                 const next = [...prev];
@@ -502,6 +534,7 @@ export default function App() {
                   next[next.length - 1] = {
                     ...last,
                     citations: [],
+                    steps: (last.steps || []).map((s) => ({ ...s, status: "done" as const })),
                     provider: event.provider,
                     model: event.model,
                     degraded: event.degraded,
@@ -538,6 +571,7 @@ export default function App() {
                     ...last,
                     text: event.answer || last.text,
                     citations: event.citations || last.citations,
+                    steps: (last.steps || []).map((s) => ({ ...s, status: "done" as const })),
                     provider: event.provider || last.provider,
                     model: event.model || last.model,
                     degraded: event.degraded ?? last.degraded,
@@ -873,32 +907,63 @@ export default function App() {
                       </div>
                     )}
 
+                    {!isUser && m.steps && m.steps.length > 0 && (
+                      <ChainOfThought className="mb-3 rounded-xl bg-slate-50/80 border border-slate-200/80 px-3 py-2">
+                        <ChainOfThoughtStep defaultOpen={!m.text} isLast>
+                          <ChainOfThoughtTrigger
+                            leftIcon={
+                              isLastAssistant && m.steps.some((s) => s.status === "running") ? (
+                                <Loader2 className="size-3.5 animate-spin text-blue-600" />
+                              ) : (
+                                <Brain className="size-3.5 text-slate-500" />
+                              )
+                            }
+                          >
+                            {isLastAssistant && !m.text
+                              ? m.steps[m.steps.length - 1]?.detail || "Thinking…"
+                              : `Thought process (${m.steps.length} ${m.steps.length === 1 ? "step" : "steps"})`}
+                          </ChainOfThoughtTrigger>
+                          <ChainOfThoughtContent>
+                            {m.steps.map((step, sIdx) => (
+                              <ChainOfThoughtItem
+                                key={`${step.stage}-${sIdx}`}
+                                className="flex items-center gap-2 text-slate-600"
+                              >
+                                {step.status === "running" ? (
+                                  <Loader2 className="size-3 animate-spin text-blue-600 shrink-0" />
+                                ) : (
+                                  <Check className="size-3 text-emerald-600 shrink-0" />
+                                )}
+                                <span>{step.detail}</span>
+                              </ChainOfThoughtItem>
+                            ))}
+                          </ChainOfThoughtContent>
+                        </ChainOfThoughtStep>
+                      </ChainOfThought>
+                    )}
+
                     {isUser ? (
                       <MessageContent className="bg-transparent p-0 text-white whitespace-pre-wrap">
                         {m.text}
                       </MessageContent>
                     ) : isLastAssistant && !m.text ? (
-                      <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-blue-50/90 border border-blue-200 text-blue-800">
-                        <Loader variant="typing" size="sm" className="text-blue-600 shrink-0" />
-                        <div className="flex flex-col">
-                          <span className="text-sm font-medium">
-                            {statusText || "Retrieving context & generating response…"}
-                          </span>
-                          <span className="text-[11px] text-blue-600/80">
-                            {activeChat?.use_local_knowledge
-                              ? "Searching workspace knowledge base"
-                              : "Preparing response"}
-                          </span>
+                      (!m.steps || m.steps.length === 0) && (
+                        <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-blue-50/90 border border-blue-200 text-blue-800">
+                          <Loader variant="typing" size="sm" className="text-blue-600 shrink-0" />
+                          <div className="flex flex-col">
+                            <span className="text-sm font-medium">
+                              {statusText || "Retrieving context & generating response…"}
+                            </span>
+                            <span className="text-[11px] text-blue-600/80">
+                              {activeChat?.use_local_knowledge
+                                ? "Searching workspace knowledge base"
+                                : "Preparing response"}
+                            </span>
+                          </div>
                         </div>
-                      </div>
+                      )
                     ) : (
                       <div>
-                        {isLastAssistant && statusText && (
-                          <div className="mb-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-blue-50 border border-blue-200 text-xs font-medium text-blue-700">
-                            <Loader variant="pulse-dot" size="sm" />
-                            <span>{statusText}</span>
-                          </div>
-                        )}
                         {m.text ? (
                           <AssistantAnswer
                             text={m.text}

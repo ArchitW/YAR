@@ -49,11 +49,18 @@ export interface Citation {
   page_height?: number | null;
 }
 
+export interface ThinkingStep {
+  stage: string;
+  detail: string;
+  status: "running" | "done";
+}
+
 export interface Message {
   id?: number;
   role: "user" | "assistant";
   text: string;
   citations?: Citation[];
+  steps?: ThinkingStep[];
   provider?: string;
   model?: string;
   degraded?: boolean;
