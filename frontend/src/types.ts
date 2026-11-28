@@ -59,6 +59,7 @@ export interface Message {
   id?: number;
   role: "user" | "assistant";
   text: string;
+  thinking?: string;
   citations?: Citation[];
   steps?: ThinkingStep[];
   provider?: string;

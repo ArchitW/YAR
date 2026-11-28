@@ -58,16 +58,6 @@ def ensure_collection(client: Any | None = None):
                 sparse_vectors_config={"sparse": SparseVectorParams()},
             )
 
-        # Payload indexes keep workspace/master filtering O(index) instead of a scan.
-        for field, schema in (
-            ("workspace_id", PayloadSchemaType.INTEGER),
-            ("is_master", PayloadSchemaType.BOOL),
-        ):
-            try:
-                target.create_payload_index(COLLECTION, field, field_schema=schema)
-            except Exception:
-                logger.debug("Payload index %s not created (already exists or unsupported)", field)
-
         if qdrant_mode() == "local":
             try:
                 count = target.get_collection(COLLECTION).points_count or 0
@@ -80,6 +70,16 @@ def ensure_collection(client: Any | None = None):
                     count,
                     LOCAL_MODE_WARN_POINTS,
                 )
+        else:
+            # Payload indexes keep workspace/master filtering O(index) in server mode.
+            for field, schema in (
+                ("workspace_id", PayloadSchemaType.INTEGER),
+                ("is_master", PayloadSchemaType.BOOL),
+            ):
+                try:
+                    target.create_payload_index(COLLECTION, field, field_schema=schema)
+                except Exception:
+                    logger.debug("Payload index %s not created (already exists or unsupported)", field)
     except Exception:
         logger.warning("Failed to verify/create Qdrant collection", exc_info=True)
 

@@ -469,18 +469,25 @@ export default function App() {
       const decoder = new TextDecoder();
       let buffer = "";
       let pending = "";
+      let pendingThinking = "";
       let rafId: number | null = null;
 
       const flush = () => {
         rafId = null;
-        if (!pending) return;
+        if (!pending && !pendingThinking) return;
         const chunk = pending;
+        const thinkingChunk = pendingThinking;
         pending = "";
+        pendingThinking = "";
         setMessages((prev) => {
           const next = [...prev];
           const last = next[next.length - 1];
           if (last && last.role === "assistant") {
-            next[next.length - 1] = { ...last, text: last.text + chunk };
+            next[next.length - 1] = {
+              ...last,
+              text: chunk ? last.text + chunk : last.text,
+              thinking: thinkingChunk ? (last.thinking || "") + thinkingChunk : last.thinking,
+            };
           }
           return next;
         });
@@ -541,6 +548,9 @@ export default function App() {
                 }
                 return next;
               });
+            } else if (event.type === "thinking") {
+              pendingThinking += event.token || "";
+              if (rafId === null) rafId = requestAnimationFrame(flush);
             } else if (event.type === "token") {
               pending += event.token;
               if (rafId === null) rafId = requestAnimationFrame(flush);
@@ -549,14 +559,20 @@ export default function App() {
                 cancelAnimationFrame(rafId);
                 rafId = null;
               }
-              if (pending) {
+              if (pending || pendingThinking) {
                 const chunk = pending;
+                const thinkingChunk = pendingThinking;
                 pending = "";
+                pendingThinking = "";
                 setMessages((prev) => {
                   const next = [...prev];
                   const last = next[next.length - 1];
                   if (last && last.role === "assistant") {
-                    next[next.length - 1] = { ...last, text: last.text + chunk };
+                    next[next.length - 1] = {
+                      ...last,
+                      text: chunk ? last.text + chunk : last.text,
+                      thinking: thinkingChunk ? (last.thinking || "") + thinkingChunk : last.thinking,
+                    };
                   }
                   return next;
                 });
@@ -921,14 +937,14 @@ export default function App() {
                       </div>
                     )}
 
-                    {!isUser && m.steps && m.steps.length > 0 && (
+                    {!isUser && ((m.steps && m.steps.length > 0) || m.thinking) && (
                       <Steps
                         defaultOpen={!m.text}
                         className="mb-3 rounded-xl bg-slate-50/80 border border-slate-200/80 px-3 py-2"
                       >
                         <StepsTrigger
                           leftIcon={
-                            isLastAssistant && m.steps.some((s) => s.status === "running") ? (
+                            isLastAssistant && !m.text ? (
                               <Loader variant="wave" size="sm" className="text-blue-600" />
                             ) : (
                               <Check className="size-3.5 text-emerald-600" />
@@ -939,14 +955,18 @@ export default function App() {
                             <Loader
                               variant="text-shimmer"
                               size="sm"
-                              text={m.steps[m.steps.length - 1]?.detail || "Processing…"}
+                              text={
+                                m.thinking
+                                  ? "Reasoning…"
+                                  : m.steps?.[m.steps.length - 1]?.detail || "Processing…"
+                              }
                             />
                           ) : (
-                            `Processed in ${m.steps.length} ${m.steps.length === 1 ? "step" : "steps"}`
+                            `Processed in ${m.steps?.length || 1} ${(m.steps?.length || 1) === 1 ? "step" : "steps"}`
                           )}
                         </StepsTrigger>
                         <StepsContent>
-                          {m.steps.map((step, sIdx) => (
+                          {(m.steps || []).map((step, sIdx) => (
                             <StepsItem
                               key={`${step.stage}-${sIdx}`}
                               className="text-slate-600"
@@ -963,6 +983,11 @@ export default function App() {
                               <span>{step.detail}</span>
                             </StepsItem>
                           ))}
+                          {m.thinking && (
+                            <div className="mt-1.5 rounded-lg bg-white/80 border border-slate-200/70 px-2.5 py-2 text-[11px] leading-relaxed text-slate-600 whitespace-pre-wrap max-h-48 overflow-y-auto font-mono">
+                              {m.thinking}
+                            </div>
+                          )}
                         </StepsContent>
                       </Steps>
                     )}
@@ -972,7 +997,7 @@ export default function App() {
                         {m.text}
                       </MessageContent>
                     ) : isLastAssistant && !m.text ? (
-                      (!m.steps || m.steps.length === 0) && (
+                      (!m.steps || m.steps.length === 0) && !m.thinking && (
                         <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-blue-50/90 border border-blue-200 text-blue-800">
                           <Loader variant="wave" size="sm" className="text-blue-600 shrink-0" />
                           <div className="flex flex-col">
